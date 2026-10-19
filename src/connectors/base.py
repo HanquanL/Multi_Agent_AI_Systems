@@ -1,1 +1,0 @@
-"""Capability-based interface that every data source connector implements."""
