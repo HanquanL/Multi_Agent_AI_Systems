@@ -1,7 +1,7 @@
 [project]
 name = "multi-agent-ai-systems"
 version = "0.1.0"
-description = "Add your description here"
+description = "Shared data gateway for many AI agents"
 readme = "README.md"
 authors = [
     { name = "HanquanL" }
