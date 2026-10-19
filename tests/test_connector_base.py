@@ -13,6 +13,7 @@ from multi_agent_ai_systems.connectors.base import (
     Versioning,
 )
 
+
 class FakeConnector(Connector):
     name = "fake"
     capabilities = Capabilities(
