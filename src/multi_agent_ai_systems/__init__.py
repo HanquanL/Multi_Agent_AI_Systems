@@ -1,2 +1,3 @@
-def hello() -> str:
-    return "Hello from multi-agent-ai-systems!"
+from importlib.metadata import version
+
+__version__ = version("multi-agent-ai-systems")
