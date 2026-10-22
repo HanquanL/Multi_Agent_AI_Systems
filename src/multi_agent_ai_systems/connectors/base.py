@@ -53,6 +53,7 @@ class Record:
     key: str
     data: Any
     version: str | None  # source version ID
+    size_bytes: int #size of the response body, the cache budgets storeage by this. 
     fetched_at: datetime
 
 
@@ -86,4 +87,4 @@ class Connector(ABC):
 
     @abstractmethod
     async def fetch(self, key: str) -> Record:
-        """make exactly one upstream request for key and return the result."""
+        """Fetch key with at most one upstream request. Never retry; the gateway decides that."""
