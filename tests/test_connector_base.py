@@ -33,7 +33,7 @@ class FakeConnector(Connector):
         self.calls += 1
         if key not in self.data:
             raise NotFoundError(key)
-        return Record(key=key, data=self.data[key], version="v1", fetched_at=datetime.now(UTC))
+        return Record(key=key, data=self.data[key], version="v1", size_bytes=len(self.data[key]),fetched_at=datetime.now(UTC))
 
 
 def test_connector_must_implement_all_methods():
@@ -59,6 +59,6 @@ async def test_fetch_missing_key_raises():
 
 
 def test_record_is_immutable():
-    record = Record(key="a", data=1, version=None, fetched_at=datetime.now(UTC))
+    record = Record(key="a", data=1, version=None, size_bytes=1, fetched_at=datetime.now(UTC))
     with pytest.raises(AttributeError):
         record.data = 2
