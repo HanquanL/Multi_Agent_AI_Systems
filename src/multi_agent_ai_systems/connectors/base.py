@@ -53,7 +53,7 @@ class Record:
     key: str
     data: Any
     version: str | None  # source version ID
-    size_bytes: int  # size of the response body, the cache budgets storeage by this.
+    size_bytes: int  # size of the response body, the cache budgets storage by this.
     fetched_at: datetime
 
 

@@ -44,6 +44,7 @@ def normalize_cik(cik: int | str) -> str:
 def submissions_key(cik: int | str) -> str:
     return f"submissions/{normalize_cik(cik)}"
 
+
 def companyfacts_key(cik: int | str) -> str:
     return f"companyfacts/{normalize_cik(cik)}"
 
