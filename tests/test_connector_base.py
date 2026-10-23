@@ -33,7 +33,13 @@ class FakeConnector(Connector):
         self.calls += 1
         if key not in self.data:
             raise NotFoundError(key)
-        return Record(key=key, data=self.data[key], version="v1", size_bytes=len(self.data[key]),fetched_at=datetime.now(UTC))
+        return Record(
+            key=key,
+            data=self.data[key],
+            version="v1",
+            size_bytes=len(self.data[key]),
+            fetched_at=datetime.now(UTC),
+        )
 
 
 def test_connector_must_implement_all_methods():
