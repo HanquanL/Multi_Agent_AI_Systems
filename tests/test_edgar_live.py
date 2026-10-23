@@ -28,9 +28,7 @@ async def test_live_submissions():
     # Our version logic assumes the newest filing comes first.
     assert recent["filingDate"][0] == max(recent["filingDate"])
     print(
-        f"\nsubmissions: version={record.version} size={record.size_bytes:,} bytes"
-        f"size={record.size_bytes:,} bytes"
-    )
+        f"\nsubmissions: version={record.version} form={recent['form'][0]} size={record.size_bytes:,} bytes")
 
 
 async def test_live_companyfacts():
