@@ -50,9 +50,11 @@ class FakeConnector(Connector):
         self.calls = 0
         self.gate: asyncio.Event | None = None  # if set, fetch waits until the test opens it
         self.failures: list[Exception] = []  # raised one per call before succeeding
+        self.versions: dict[str, str] = {}  # per-key version; default "v1"
+        self.immutable: set[str] = set()  # keys reported as immutable
 
     def mutability(self, key: str) -> Mutability:
-        return Mutability.OVERWRITTEN
+        return Mutability.IMMUTABLE if key in self.immutable else Mutability.OVERWRITTEN
 
     async def fetch(self, key: str) -> Record:
         self.calls += 1
@@ -66,7 +68,7 @@ class FakeConnector(Connector):
         return Record(
             key=key,
             data=value,
-            version="v1",
+            version=self.versions.get(key, "v1"),
             size_bytes=len(value),
             fetched_at=datetime.now(UTC),
         )

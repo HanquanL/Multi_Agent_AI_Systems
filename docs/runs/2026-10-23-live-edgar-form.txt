@@ -1,0 +1,17 @@
+test result for F3:
+=============================================================================================================== test session starts ===============================================================================================================
+platform win32 -- Python 3.11.9, pytest-9.1.1, pluggy-1.7.0
+rootdir: D:\NYU\Foundations of Networks and Mobile Systems\multi_agent_ai_systems
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 55 items / 53 deselected / 2 selected                                                                                                                                                                                                    
+
+tests\test_edgar_live.py 
+submissions: version=0001140361-26-040540 form=4 size=163,917 bytes
+.
+companyfacts: version=0000320193-26-000020 size=3,789,099 bytes
+.
+
+======================================================================================================== 2 passed, 53 deselected in 1.06s =========================================================================================================
