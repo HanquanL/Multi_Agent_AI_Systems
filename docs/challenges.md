@@ -31,9 +31,14 @@ separately from errors caused by reusing an answer to a "latest"-type question.
 
 **Problem.** See F8: capacity 10 with refill 10/s admits up to 20 requests in one second.
 
-**Resolution (pending).** Either a sliding window (at most 10 in any 1-second window) or a bucket
-with no burst (one request per 100 ms), probably with a soft cap below SEC's limit, e.g. 8 req/s.
-Decided when the rate limiter is built.
+**Resolution.** A sliding-window limiter: a request is admitted only if fewer than N were admitted
+in the previous window. A safety factor keeps us below the source's real limit (0.8 for EDGAR,
+i.e. 8 per rolling second). One limiter is shared by every agent and every attempt, retries
+included. Queued requests use no capacity; a request uses capacity when it is admitted, right before
+it is sent. Cancelled and timed-out waiters leave without using capacity, and `close()` rejects
+queued and new requests on shutdown. Even spacing (pacing) can be added later without replacing
+the algorithm.
+
 
 ## C4. Counting upstream requests exactly
 *2026-10-19*
@@ -104,6 +109,15 @@ The core promises coordination and transparent freshness. Answer correctness is 
 a domain policy and ground truth exist. EDGAR is the only real connector this semester; fake
 connectors with different capabilities show the core is reusable, and a test will fail if core
 modules import the EDGAR connector.
+
+## C10. Clock resolution can break a strict rate limit
+*2026-10-23, from a limiter test failure*
+
+**Problem.** See F10: on Windows with Python 3.11, `time.monotonic()` only ticks every 15.6 ms.
+That is enough to let one extra request into a 1-second window at the edges.
+
+**Resolution.** The real clock uses `time.perf_counter()` (100 ns resolution). Lesson: a
+correctness guarantee depends on the resolution of the clock, not just the algorithm.
 
 ## Out of scope, by choice
 

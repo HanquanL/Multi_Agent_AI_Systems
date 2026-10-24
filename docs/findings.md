@@ -68,14 +68,27 @@ This is the basis for comparing three invalidation policies: TTL, whole-record v
 fact-aware.
 
 ## F8. A standard token bucket allows bursts above the limit
-*2026-10-19 · verified by arithmetic, to be tested*
+*2026-10-19 analysis · 2026-10-23 tested*
 
 A token bucket with capacity C and refill rate R per second can admit up to C + R requests in one
 1-second window. With C = R = 10 that is 20, which breaks the gate "never over 10 requests per
-second at any moment". To be confirmed by the rate limiter tests.
+second at any moment". We use a sliding window instead; `test_never_more_than_limit_in_any_window`
+sends 55 concurrent requests and confirms no 1-second window ever holds more than 10.
 
 ## F9. Findings changed the experiment design, not the core's size
 *2026-10-22 · verified*
 
 The package is about 300 lines (`edgar.py` 190, `base.py` 90). Core files contain no SEC or EDGAR
 references; `config.py` holds the only SEC-specific setting outside the EDGAR connector.
+
+## F10. `time.monotonic()` is coarse on Windows with Python 3.11
+*2026-10-23 · verified*
+
+| Clock | Windows implementation | Resolution |
+|---|---|---|
+| `time.monotonic()` | `GetTickCount64()` | 15.625 ms |
+| `time.perf_counter()` | `QueryPerformanceCounter()` | 100 ns |
+
+Spotted from rounded timestamps (`53479.0`, `53479.187`) in a test failure. A clock this coarse can
+make the limiter see a window as clear up to one tick early, so 11 requests could fall in one real
+second. The real clock now uses `time.perf_counter()`.
