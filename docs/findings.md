@@ -18,11 +18,12 @@ In the live `submissions` response, `filings.recent.filingDate[0]` is the latest
 This confirms the assumption behind how the connector picks the `submissions` version.
 
 ## F3. The `submissions` version is not a financial filing
-*2026-10-22 · partly inferred*
+*2026-10-22 · verified 2026-10-23*
 
 Apple's `submissions` version was `0001140361-26-040540`. The prefix `0001140361` is a filing agent's
-CIK, not Apple's `0000320193` (verified). That this filing is an insider Form 4 is inferred and still
-needs checking against `filings.recent.form[0]`.
+CIK, not Apple's `0000320193`. A second live run printed `filings.recent.form[0]`: the filing is a
+**Form 4** (an insider transaction report), which contains no financial statements.
+Raw output: [runs/2026-10-23-live-edgar-form.txt](runs/2026-10-23-live-edgar-form.txt)
 
 Consequence: the `submissions` version changes on every filing of any type, so it is a noisy signal
 for invalidating financial answers.
@@ -50,7 +51,7 @@ before choosing a capacity.
 *2026-10-22 · verified, single run*
 
 The two live tests (two requests, including the 3.8 MB download) took 1.74 s in total on a home
-network. One sample; not a benchmark.
+network on 2026-10-22, and 1.06 s on 2026-10-23. Two samples; not a benchmark.
 
 ## F7. Record state and answer state are independent
 *2026-10-19 to 2026-10-22 · partly supported by F3, partly reasoning*
@@ -117,3 +118,12 @@ limiter slots. A retry cannot skip the limiter.
 53 offline tests run in about 0.5 s. The three slowest (about 0.1 s each) are the rate limiter's
 cancellation, timeout and shutdown tests, which use the real clock on purpose; everything else uses
 the simulated clock.
+
+## F14. Apple's data did not change between the two live runs
+*2026-10-23 · verified*
+
+The 2026-10-22 and 2026-10-23 live runs returned identical versions and sizes for both endpoints
+(`submissions` `0001140361-26-040540`, 163,917 bytes; `companyfacts` `0000320193-26-000020`,
+3,789,099 bytes). Refetching either one a day later would have cost two requests and about 4 MB of
+download for no new information. Two snapshots of one company is anecdotal, but it is the kind of
+waste (category 2: refetch after TTL expiry with unchanged data) the request profiling will measure.
