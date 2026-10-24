@@ -76,10 +76,13 @@ second at any moment". We use a sliding window instead; `test_never_more_than_li
 sends 55 concurrent requests and confirms no 1-second window ever holds more than 10.
 
 ## F9. Findings changed the experiment design, not the core's size
-*2026-10-22 · verified*
+*2026-10-22 · verified · updated 2026-10-23*
 
-The package is about 300 lines (`edgar.py` 190, `base.py` 90). Core files contain no SEC or EDGAR
-references; `config.py` holds the only SEC-specific setting outside the EDGAR connector.
+On 2026-10-22 the package was about 300 lines (`edgar.py` 190, `base.py` 90). After the rate
+limiter, request merging and the upstream path it is 486 lines: `edgar.py` 190, `base.py` 90,
+`ratelimit.py` 59, `upstream.py` 58, `merging.py` 47, `clock.py` 21, `config.py` 18. Core files
+contain no SEC or EDGAR references; `config.py` holds the only SEC-specific setting outside the
+EDGAR connector, and `test_boundaries.py` now enforces this.
 
 ## F10. `time.monotonic()` is coarse on Windows with Python 3.11
 *2026-10-23 · verified*
@@ -92,3 +95,25 @@ references; `config.py` holds the only SEC-specific setting outside the EDGAR co
 Spotted from rounded timestamps (`53479.0`, `53479.187`) in a test failure. A clock this coarse can
 make the limiter see a window as clear up to one tick early, so 11 requests could fall in one real
 second. The real clock now uses `time.perf_counter()`.
+
+## F11. Merged requests cost one slot and one upstream request
+*2026-10-23 · verified (offline test)*
+
+In `test_merged_requests_use_one_limiter_slot`, 10 concurrent requests for the same key go through
+`RequestMerger` and `Upstream`: the connector is called once, `Upstream.attempts == 1`, and the rate
+limiter records one admission. Without merging, the same burst would take 10 slots, more than a
+full second of EDGAR capacity at 8 per second.
+
+## F12. Retries are rate limited like first attempts
+*2026-10-23 · verified (offline test, simulated clock)*
+
+In `test_every_retry_passes_the_limiter`, a fetch that fails twice and then succeeds, with a limit of
+one request per second and no backoff, finishes at simulated time 2.0 s: three attempts, three
+limiter slots. A retry cannot skip the limiter.
+
+## F13. The offline suite stays fast
+*2026-10-23 · verified*
+
+53 offline tests run in about 0.5 s. The three slowest (about 0.1 s each) are the rate limiter's
+cancellation, timeout and shutdown tests, which use the real clock on purpose; everything else uses
+the simulated clock.

@@ -39,7 +39,6 @@ it is sent. Cancelled and timed-out waiters leave without using capacity, and `c
 queued and new requests on shutdown. Even spacing (pacing) can be added later without replacing
 the algorithm.
 
-
 ## C4. Counting upstream requests exactly
 *2026-10-19*
 
@@ -61,15 +60,34 @@ cases make this hard:
    so it has to run as its own task.
 3. "Identical" needs normalized keys: CIK `320193` and `0000320193` are the same company.
 
-**Resolution.** (3) is done: the EDGAR connector only accepts 10-digit CIKs and provides key
-helpers. (1) and (2) are handled when request merging is built.
+**Resolution.** `RequestMerger` keeps one in-flight task per key.
+
+1. When the fetch finishes, successfully or not, a done-callback removes the key, and `get()`
+   ignores a task that has already finished. The next request always starts a fresh fetch.
+2. The fetch runs as its own task, and callers wait on it through `asyncio.shield`, so cancelling
+   or timing out one caller only ends that caller's wait.
+3. The EDGAR connector only accepts 10-digit CIKs and provides key helpers, so the merger can treat
+   keys as plain strings and stay domain-free.
+
+The merger sits in front of `Upstream`, the single path to a connector, so 10 concurrent requests
+for one key cost one limiter slot and one upstream request (F11).
 
 ## C6. Testing failures, timeouts, cancellation and recovery
 *2026-10-19, same lecture*
 
-**Resolution.** Connector tests cover HTTP 404, 429 and 5xx, network timeouts, and unparseable
-responses, all offline with a mock transport (done). Merging tests will cover a waiting caller
-timing out, cancellation, and success after a failed fetch.
+**Resolution.** Covered at every layer built so far, all offline:
+
+- **Connector** (`test_edgar.py`): HTTP 404, 429 and 5xx, network timeouts, unparseable responses;
+  none of them retried.
+- **Rate limiter** (`test_ratelimit.py`): cancelled and timed-out waiters use no capacity and do not
+  block the queue; `close()` rejects queued and new callers.
+- **Merging and retries** (`test_recovery.py`): a failure reaches every waiter and does not stick;
+  cancelling the first caller or timing out a caller leaves the fetch running for the others;
+  `close()` cancels in-flight fetches; every retry passes the limiter; missing records are not
+  retried; throttled retries wait for `retry_after`; retries stop at `max_attempts`.
+
+Restart recovery (requests queued when the gateway restarts) is not covered yet. The in-memory
+design simply loses them, and callers see an error.
 
 ## C7. Keeping the kinds of correctness separate
 *2026-10-19, same lecture*
@@ -77,8 +95,9 @@ timing out, cancellation, and success after a failed fetch.
 **Problem.** The gateway can be wrong in four different ways: cache answers, coordination,
 quota enforcement, and recovery.
 
-**Resolution.** Tests are split by file (`test_cache`, `test_merging`, `test_ratelimit`,
-`test_recovery`) so a failure says which kind broke.
+**Resolution.** Tests are split by file so a failure says which kind broke: `test_merging.py`
+(coordination), `test_ratelimit.py` (quota enforcement), `test_recovery.py` (recovery), and
+`test_cache.py` (answer correctness) once the cache exists.
 
 ## C8. Version IDs are too coarse for some data
 *2026-10-22, first live EDGAR run*
@@ -107,8 +126,9 @@ responses and eviction. Handling every industry's semantics in the core would ma
 
 The core promises coordination and transparent freshness. Answer correctness is promised only when
 a domain policy and ground truth exist. EDGAR is the only real connector this semester; fake
-connectors with different capabilities show the core is reusable, and a test will fail if core
-modules import the EDGAR connector.
+connectors with different capabilities show the core is reusable. `test_boundaries.py` reads the
+imports of every core module (without running them) and fails if any of them imports the EDGAR
+connector.
 
 ## C10. Clock resolution can break a strict rate limit
 *2026-10-23, from a limiter test failure*
