@@ -125,14 +125,16 @@ limiter slots. A retry cannot skip the limiter.
 about 0.54 s. The three slowest (about 0.1 s each) are the rate limiter's cancellation, timeout and
 shutdown tests, which use the real clock on purpose; everything else uses the simulated clock.
 
-## F14. Apple's data did not change between the two live runs
-*2026-10-23 · verified*
+## F14. Apple's data did not change across several days
+*2026-10-23 · verified · extended 2026-10-26*
 
 The 2026-10-22 and 2026-10-23 live runs returned identical versions and sizes for both endpoints
 (`submissions` `0001140361-26-040540`, 163,917 bytes; `companyfacts` `0000320193-26-000020`,
-3,789,099 bytes). Refetching either one a day later would have cost two requests and about 4 MB of
-download for no new information. Two snapshots of one company is anecdotal, but it is the kind of
-waste (category 2: refetch after TTL expiry with unchanged data) the request profiling will measure.
+3,789,099 bytes). The 2026-10-26 end-to-end demo (F19) returned the same `submissions` version and
+size again, so Apple's filing list was unchanged for at least four days. Refetching either endpoint
+a day later would have cost two requests and about 4 MB of download for no new information. A few
+snapshots of one company are anecdotal, but this is the kind of waste (category 2: refetch after TTL
+expiry with unchanged data) the request profiling will measure.
 
 ## F15. A stale hit is invisible to the TTL but visible in the label
 *2026-10-23 · verified (offline test, simulated clock)*
@@ -165,3 +167,25 @@ three clients connected at once". Not yet measured over HTTP against live EDGAR.
 With the 7 MCP server tests added, the offline suite (87 tests) takes about 1.07 s, up from about
 0.54 s for 80 tests. MCP client setup is the main cost; it is still fast enough to run on every
 change.
+
+## F19. The gateway works end to end against live EDGAR
+*2026-10-26 · verified (live run)*
+
+`scripts/demo_three_clients.py` against a server started with
+`python -m multi_agent_ai_systems --http 8000`: three separate MCP clients over streamable HTTP ask
+for Apple's `submissions` at the same time, then again.
+
+| | Agent requests | Served from | SEC requests |
+|---|---|---|---|
+| Round 1 | 3 | upstream, all three merged into one fetch | 1 |
+| Round 2 | 3 | cache (age 0.08–0.09 s) | 0 |
+
+Gateway stats: 3 misses, 3 hits, one fetch with reason `first`, `upstream_attempts = 1`, one cache
+entry of 163,917 bytes (0.06% of 256 MB), no evictions, rate limit 8 per second (0.8 safety
+factor). Every layer worked together live: MCP over HTTP, shared gateway, merging, cache, freshness
+labels, rate limiter, EDGAR connector.
+
+Six agent requests cost one SEC request in this run. That is a demonstration, not a measured
+saving: one key, three agents, two rounds. Real savings and stale-answer rates are for the
+evaluation harness.
+Raw output: [runs/2026-10-26-demo-three-clients.txt](runs/2026-10-26-demo-three-clients.txt)
