@@ -26,6 +26,11 @@ changed. "Latest" is a property of a collection (the company's filing list), not
 must track what they depend on, including collections. The evaluator counts stale-record errors
 separately from errors caused by reusing an answer to a "latest"-type question.
 
+**Status (2026-10-23).** Record-level validity is built: `TTLPolicy` treats immutable records as
+always valid and expires overwritten ones after a TTL. Answer-level dependency tracking is not built
+yet; it belongs in an optional domain validity policy (see C9), which the gateway can already accept
+through the `ValidityPolicy` interface.
+
 ## C3. A standard token bucket breaks the rate gate
 *2026-10-19, before writing the rate limiter*
 
@@ -95,9 +100,9 @@ design simply loses them, and callers see an error.
 **Problem.** The gateway can be wrong in four different ways: cache answers, coordination,
 quota enforcement, and recovery.
 
-**Resolution.** Tests are split by file so a failure says which kind broke: `test_merging.py`
-(coordination), `test_ratelimit.py` (quota enforcement), `test_recovery.py` (recovery), and
-`test_cache.py` (answer correctness) once the cache exists.
+**Resolution.** Tests are split by file so a failure says which kind broke: `test_cache.py`
+(freshness and answer correctness), `test_merging.py` (coordination), `test_ratelimit.py` (quota
+enforcement), `test_eviction.py` (storage limits), and `test_recovery.py` (recovery).
 
 ## C8. Version IDs are too coarse for some data
 *2026-10-22, first live EDGAR run*
@@ -109,6 +114,11 @@ version alone causes needless refetches.
 **Resolution.** Record versions stay as cheap change signals. Answer validity should depend on the
 specific facts an answer used. Fact-aware invalidation is a research policy to compare against
 TTL and whole-record versioning, not part of the first version.
+
+**Known effect on measurement.** The gateway labels a refetch "changed" when the record version
+differs. For `submissions`, a Form 4 counts as a change, so `REFETCH_CHANGED` overcounts changes that
+matter to financial answers, and `REFETCH_UNCHANGED` (pure waste) undercounts. The request profiling
+must report this caveat until a fact-aware policy exists.
 
 ## C9. Keeping a general-purpose gateway from growing without bound
 *2026-10-22*
@@ -138,6 +148,34 @@ That is enough to let one extra request into a 1-second window at the edges.
 
 **Resolution.** The real clock uses `time.perf_counter()` (100 ns resolution). Lesson: a
 correctness guarantee depends on the resolution of the clock, not just the algorithm.
+
+## C11. Bounded storage without losing durable data
+*2026-10-22, design requirement; built 2026-10-23*
+
+**Problem.** One company's `companyfacts` is about 3.8 MB (F5), so an unbounded cache does not work
+for hundreds of companies, and counting entries says nothing about memory. Eviction must also never
+touch durable data such as configuration, quotas, or experiment results.
+
+**Resolution.** `RecordCache` budgets by bytes (each record's `size_bytes`, the response body
+length). When an insert would cross the high watermark (90%), it evicts down to the low watermark
+(80%) before inserting, so usage never reaches the hard capacity. Records larger than the low
+watermark are served but not cached. The eviction policy is a replaceable interface (LRU by default,
+FIFO included to prove it swaps). The cache holds only disposable source data; durable data lives
+elsewhere, so eviction cannot reach it. Evictions are counted separately from invalidations.
+
+## C12. Counting why each upstream fetch happened, exactly once
+*2026-10-23, while building the gateway*
+
+**Problem.** The request profiling needs a reason for every upstream request: first miss, refetch
+of unchanged data (waste), refetch after a real change, or refetch after eviction (waste). With
+request merging, ten callers can share one fetch; classifying per caller would count one request
+ten times. And at the moment of a miss, the gateway cannot yet know whether the data changed.
+
+**Resolution.** The cache update and the classification run inside the merged fetch
+(`Gateway._fetch_and_store`), so each upstream fetch is classified once. The changed/unchanged
+decision is made after the refetch by comparing the old and new record versions. Evicted and
+too-large keys are tracked so their refetches get their own reasons. Caveat: record versions are
+noisy for some data (C8).
 
 ## Out of scope, by choice
 

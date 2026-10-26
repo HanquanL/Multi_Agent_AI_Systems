@@ -79,11 +79,17 @@ sends 55 concurrent requests and confirms no 1-second window ever holds more tha
 ## F9. Findings changed the experiment design, not the core's size
 *2026-10-22 · verified · updated 2026-10-23*
 
-On 2026-10-22 the package was about 300 lines (`edgar.py` 190, `base.py` 90). After the rate
-limiter, request merging and the upstream path it is 486 lines: `edgar.py` 190, `base.py` 90,
-`ratelimit.py` 59, `upstream.py` 58, `merging.py` 47, `clock.py` 21, `config.py` 18. Core files
-contain no SEC or EDGAR references; `config.py` holds the only SEC-specific setting outside the
-EDGAR connector, and `test_boundaries.py` now enforces this.
+| Date | Built so far | Lines |
+|---|---|---|
+| 2026-10-22 | connector interface, EDGAR connector | ~300 |
+| 2026-10-23 | + rate limiter, request merging, upstream path | 486 |
+| 2026-10-23 | + byte-bounded cache, validity policy, gateway | 797 |
+
+Current breakdown: `edgar.py` 190, `gateway.py` 144, `cache.py` 133, `base.py` 90, `ratelimit.py`
+59, `upstream.py` 58, `merging.py` 47, `validity.py` 34, `clock.py` 21, `config.py` 18. Only
+`edgar.py` (190 lines) is source-specific; the other ~600 lines are domain-free. Core files contain no
+SEC or EDGAR references; `config.py` holds the only SEC-specific setting outside the EDGAR
+connector, and `test_boundaries.py` enforces this.
 
 ## F10. `time.monotonic()` is coarse on Windows with Python 3.11
 *2026-10-23 · verified*
@@ -115,9 +121,9 @@ limiter slots. A retry cannot skip the limiter.
 ## F13. The offline suite stays fast
 *2026-10-23 · verified*
 
-53 offline tests run in about 0.5 s. The three slowest (about 0.1 s each) are the rate limiter's
-cancellation, timeout and shutdown tests, which use the real clock on purpose; everything else uses
-the simulated clock.
+53 offline tests ran in about 0.5 s on 2026-10-23; after the cache and gateway, 80 tests run in
+about 0.54 s. The three slowest (about 0.1 s each) are the rate limiter's cancellation, timeout and
+shutdown tests, which use the real clock on purpose; everything else uses the simulated clock.
 
 ## F14. Apple's data did not change between the two live runs
 *2026-10-23 · verified*
@@ -127,3 +133,20 @@ The 2026-10-22 and 2026-10-23 live runs returned identical versions and sizes fo
 3,789,099 bytes). Refetching either one a day later would have cost two requests and about 4 MB of
 download for no new information. Two snapshots of one company is anecdotal, but it is the kind of
 waste (category 2: refetch after TTL expiry with unchanged data) the request profiling will measure.
+
+## F15. A stale hit is invisible to the TTL but visible in the label
+*2026-10-23 · verified (offline test, simulated clock)*
+
+In `test_stale_hit_inside_ttl_is_visible_in_the_label`, the source changes from version `v1` to `v2`
+60 seconds after the gateway cached `v1`. With a one-hour TTL the gateway still serves `v1` from the
+cache: a stale hit. The freshness label reports `version=v1` and `age_seconds=60`, so the agent can
+see what it got. This is the cache-safety problem the experiments will measure at scale: how often
+TTL-based serving returns outdated data, and what preventing it costs in upstream requests.
+
+## F16. The gateway classifies every upstream fetch
+*2026-10-23 · verified (offline tests)*
+
+Each upstream fetch is tagged with one reason: `FIRST`, `REFETCH_UNCHANGED`, `REFETCH_CHANGED`,
+`REFETCH_UNKNOWN`, `EVICTED`, or `UNCACHEABLE`. Tests check each one, and check that 10 merged
+callers produce one fetch and one reason, not ten. These counts are the input for the planned
+request profiling (share of waste = unchanged refetches + eviction refetches).
