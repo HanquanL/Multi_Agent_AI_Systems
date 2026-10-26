@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "src" / "multi_agent_ai_systems"
-SOURCE_SPECIFIC = {"edgar.py", "config.py__main__.py", "__main__.py"}  # config wires sources up; it is not core
+SOURCE_SPECIFIC = {"edgar.py", "config.py", "__main__.py"}  # config wires sources up; it is not core
 
 
 def imported_modules(path: Path) -> list[str]:

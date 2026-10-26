@@ -177,6 +177,20 @@ decision is made after the refetch by comparing the old and new record versions.
 too-large keys are tracked so their refetches get their own reasons. Caveat: record versions are
 noisy for some data (C8).
 
+## C13. The transport decides whether anything is shared
+*2026-10-26, while building the MCP server*
+
+**Problem.** MCP's default transport, stdio, makes each agent start its own server process. Every
+agent would then get its own gateway: its own cache, its own rate limiter, no request merging, and
+no combined limit on what all agents send to the source. The whole point of the project would be
+lost without any error. A second trap: the SDK's per-connection startup hook runs once per
+client, so a gateway created there is not shared either.
+
+**Resolution.** The gateway is built once, outside the server, and `build_server(gateway)` only
+wraps it in tools. For many agents the server runs over streamable HTTP (one process at
+`127.0.0.1:8000/mcp`); stdio remains for single-agent use. A test connects three MCP clients at
+once and checks that they share one fetch (F17).
+
 ## Out of scope, by choice
 
 Hot keys, partitioning, replication, and distributed NoSQL databases were considered and left out

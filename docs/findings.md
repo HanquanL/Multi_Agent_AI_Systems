@@ -150,3 +150,18 @@ Each upstream fetch is tagged with one reason: `FIRST`, `REFETCH_UNCHANGED`, `RE
 `REFETCH_UNKNOWN`, `EVICTED`, or `UNCACHEABLE`. Tests check each one, and check that 10 merged
 callers produce one fetch and one reason, not ten. These counts are the input for the planned
 request profiling (share of waste = unchanged refetches + eviction refetches).
+
+## F17. Three MCP clients share one upstream fetch
+*2026-10-26 · verified (offline test, in-process MCP clients)*
+
+In `test_three_clients_share_one_fetch`, three separate MCP clients call `get_record` for the same
+key at the same time through the real MCP protocol (in-process, no network). The gateway records
+three misses and the source is called once. This is the build-order acceptance test for "two or
+three clients connected at once". Not yet measured over HTTP against live EDGAR.
+
+## F18. The MCP layer adds visible but small test time
+*2026-10-26 · verified*
+
+With the 7 MCP server tests added, the offline suite (87 tests) takes about 1.07 s, up from about
+0.54 s for 80 tests. MCP client setup is the main cost; it is still fast enough to run on every
+change.
