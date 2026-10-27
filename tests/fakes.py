@@ -18,8 +18,10 @@ from multi_agent_ai_systems.connectors.base import (
 class FakeClock:
     """A clock that jumps forward instead of waiting.
 
-    Only correct when one task sleeps at a time. That holds for the rate limiter,
-    which sleeps under its lock. The replay engine will need a proper event-queue clock.
+        Only correct when one task sleeps at a time. That holds for the rate limiter, whose
+    dispatcher task is its only sleeper. sleep() yields to the event loop once before
+    jumping, so callers admitted just before it run and see the time they were admitted.
+    The replay engine will need a proper event-queue clock.
     """
 
     def __init__(self, start: float = 0.0):
@@ -32,6 +34,7 @@ class FakeClock:
         self._now += seconds
 
     async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(0)
         self._now += max(seconds, 0.0)
 
 

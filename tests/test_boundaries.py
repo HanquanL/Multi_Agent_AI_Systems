@@ -5,7 +5,7 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "src" / "multi_agent_ai_systems"
 # config wires sources up; it is not core
-SOURCE_SPECIFIC = {"edgar.py", "config.py", "__main__.py"}  
+SOURCE_SPECIFIC = {"edgar.py", "config.py", "__main__.py"}
 
 
 def imported_modules(path: Path) -> list[str]:
