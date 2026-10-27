@@ -171,7 +171,7 @@ change.
 ## F19. The gateway works end to end against live EDGAR
 *2026-10-26 · verified (live run)*
 
-`scripts/demo_three_clients.py` against a server started with
+`scripts/demo_3_clients.py` against a server started with
 `python -m multi_agent_ai_systems --http 8000`: three separate MCP clients over streamable HTTP ask
 for Apple's `submissions` at the same time, then again.
 
