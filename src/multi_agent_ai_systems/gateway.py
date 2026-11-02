@@ -11,6 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD, AllocationPolicy
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.clock import Clock, RealClock
 from multi_agent_ai_systems.connectors.base import Connector, Record
@@ -47,10 +48,21 @@ class FetchReason(Enum):
 
 
 @dataclass
+class WorkloadCounts:
+    hits: int = 0
+    misses: int = 0
+    fetches_started: int = 0  # upstream fetches this workload started; joiners are not charged
+
+
+@dataclass
 class GatewayStats:
     hits: int = 0
     misses: int = 0
     fetches: Counter[FetchReason] = field(default_factory=Counter)
+    by_workload: dict[str, WorkloadCounts] = field(default_factory=dict)  # per bucket
+
+    def workload(self, bucket: str) -> WorkloadCounts:
+        return self.by_workload.setdefault(bucket, WorkloadCounts())
 
 
 class Gateway:
@@ -62,6 +74,7 @@ class Gateway:
         policy: ValidityPolicy,
         safety_factor: float = 1.0,
         max_attempts: int = 1,
+        allocation: AllocationPolicy | None = None,
         clock: Clock | None = None,
     ):
         self._clock = clock or RealClock()
@@ -69,7 +82,10 @@ class Gateway:
         self.cache = cache
         self.policy = policy
         self.limiter = RateLimiter(
-            connector.capabilities.rate_limit, safety_factor=safety_factor, clock=self._clock
+            connector.capabilities.rate_limit,
+            safety_factor=safety_factor,
+            clock=self._clock,
+            policy=allocation,
         )
         self.upstream = Upstream(
             connector, self.limiter, max_attempts=max_attempts, clock=self._clock
@@ -80,27 +96,41 @@ class Gateway:
         self._uncacheable: set[str] = set()
         self.stats = GatewayStats()
 
-    async def get(self, key: str, *, max_age: float | None = None) -> Response:
+    async def get(
+        self,
+        key: str,
+        *,
+        max_age: float | None = None,
+        workload: str = DEFAULT_WORKLOAD,
+        agent: str = "anonymous",
+    ) -> Response:
+        """workload decides whose share of the rate limit a fetch uses. Cache hits and
+        joining a fetch already in flight use none."""
+        counts = self.stats.workload(self.limiter.policy.bucket(workload))
         record = self.cache.get(key)
         if record is not None:
             age = self._clock.now() - self._stored_at[key]
             verdict = self.policy.check(record, age, self.connector.mutability(key))
             if _servable(verdict, age, max_age):
                 self.stats.hits += 1
+                counts.hits += 1
                 return Response(record.data, _label(record, age, "cache"))
 
         self.stats.misses += 1
-        record = await self._merger.get(key)
+        counts.misses += 1
+        record = await self._merger.get(key, workload, agent)
         return Response(record.data, _label(record, 0.0, "upstream"))
 
     async def close(self) -> None:
         await self._merger.close()
         self.limiter.close()
 
-    async def _fetch_and_store(self, key: str) -> Record:
-        """Runs once per merged fetch, so each upstream fetch is classified exactly once."""
+    async def _fetch_and_store(self, key: str, workload: str, agent: str) -> Record:
+        """Runs once per merged fetch, so each upstream fetch is classified exactly once
+        and charged to the workload that started it."""
+        self.stats.workload(self.limiter.policy.bucket(workload)).fetches_started += 1
         old = self.cache.get(key)
-        record = await self.upstream.fetch(key)
+        record = await self.upstream.fetch(key, workload, agent)
         self.stats.fetches[self._reason(key, old, record)] += 1
         if self.cache.put(record):
             self._stored_at[key] = self._clock.now()

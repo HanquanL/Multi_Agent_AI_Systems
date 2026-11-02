@@ -7,7 +7,7 @@ from typing import Any
 
 from multi_agent_ai_systems.connectors.base import Record
 
-Fetch = Callable[[str], Coroutine[Any, Any, Record]]
+Fetch = Callable[..., Coroutine[Any, Any, Record]]  # fetch(key, *context)
 
 
 class RequestMerger:
@@ -24,10 +24,12 @@ class RequestMerger:
         self._inflight: dict[str, asyncio.Task[Record]] = {}
         self.fetches_started = 0
 
-    async def get(self, key: str) -> Record:
+    async def get(self, key: str, *context: Any) -> Record:
+        """context (e.g. who is asking) is passed to fetch only when this call starts the
+        fetch: the caller that starts a fetch is charged for it, callers who join are not."""
         task = self._inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(self._fetch(key))
+            task = asyncio.create_task(self._fetch(key, *context))
             task.add_done_callback(partial(self._finished, key))
             self._inflight[key] = task
             self.fetches_started += 1

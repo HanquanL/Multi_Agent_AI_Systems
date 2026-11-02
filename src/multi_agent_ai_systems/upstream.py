@@ -1,5 +1,6 @@
 """The single path from the gateway to a source: every attempt passes the rate limiter."""
 
+from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD
 from multi_agent_ai_systems.clock import Clock, RealClock
 from multi_agent_ai_systems.connectors.base import (
     Connector,
@@ -37,11 +38,14 @@ class Upstream:
         self._clock = clock or RealClock()
         self.attempts = 0
 
-    async def fetch(self, key: str) -> Record:
+    async def fetch(
+        self, key: str, workload: str = DEFAULT_WORKLOAD, agent: str = "anonymous"
+    ) -> Record:
+        """Every attempt, retries included, is charged to the same workload."""
         attempt = 0
         while True:
             attempt += 1
-            await self._limiter.acquire()
+            await self._limiter.acquire(workload, agent)
             self.attempts += 1
             try:
                 return await self._connector.fetch(key)
