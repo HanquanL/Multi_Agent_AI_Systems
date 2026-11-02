@@ -15,3 +15,7 @@ wheels/
 # Tool caches
 .pytest_cache/
 .ruff_cache/
+# Local gateway databases
+*.db
+*.db-wal
+*.db-shm

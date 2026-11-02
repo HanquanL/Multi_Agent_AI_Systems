@@ -1,6 +1,7 @@
 """Run the shared data gateway for SEC EDGAR as an MCP server.
 
 uv run --env-file .env python -m multi_agent_ai_systems --http 8000   # shared, many agents
+uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --db gateway.db  # + disk
 uv run --env-file .env python -m multi_agent_ai_systems               # stdio, one agent
 """
 
@@ -12,6 +13,7 @@ from multi_agent_ai_systems.config import sec_user_agent
 from multi_agent_ai_systems.connectors.edgar import EdgarConnector
 from multi_agent_ai_systems.gateway import Gateway
 from multi_agent_ai_systems.server import build_server
+from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import TTLPolicy
 
 INSTRUCTIONS = """Shared gateway to SEC EDGAR. Call get_record with one of these keys:
@@ -36,6 +38,10 @@ def main() -> None:
     parser.add_argument("--cache-mb", type=int, default=256, help="cache capacity in MB")
     parser.add_argument("--ttl", type=float, default=3600.0, help="cache TTL in seconds")
     parser.add_argument(
+        "--db", metavar="PATH", help="keep fetched records in this SQLite file across restarts"
+    )
+    parser.add_argument("--db-mb", type=int, default=1024, help="disk store capacity in MB")
+    parser.add_argument(
         "--workload",
         type=workload_quota,
         action="append",
@@ -59,6 +65,7 @@ def main() -> None:
         policy=TTLPolicy(args.ttl),
         safety_factor=0.8,
         allocation=QuotaFIFO(dict(args.workload), default_quota=args.default_quota),
+        store=SQLiteRecordStore(args.db, args.db_mb * 1_000_000) if args.db else None,
     )
     server = build_server(gateway, instructions=INSTRUCTIONS)
     if args.http:

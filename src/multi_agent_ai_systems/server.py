@@ -36,7 +36,8 @@ def build_server(
         than that. workload is the app or team you belong to (set by your operator); it
         decides whose share of the rate limit a fetch uses. agent_id identifies you in logs.
         The result has the data plus a freshness label: the source version, when it was
-        fetched, its age, and whether it came from the cache or the source.
+        fetched, its age, and whether it came from the memory cache, the disk store, or the
+        source.
         """
         # workload and agent_id are taken on trust until access keys exist.
         try:
@@ -91,6 +92,7 @@ def stats_payload(gateway: Gateway) -> dict[str, Any]:
         }
     return {
         "hits": stats.hits,
+        "store_hits": stats.store_hits,
         "misses": stats.misses,
         "upstream_fetches": {reason.value: n for reason, n in stats.fetches.items()},
         "upstream_attempts": gateway.upstream.attempts,
@@ -102,9 +104,25 @@ def stats_payload(gateway: Gateway) -> dict[str, Any]:
             "evicted_bytes": cache.stats.evicted_bytes,
             "too_large": cache.stats.too_large,
         },
+        "store": store_payload(gateway),
         "rate_limit": {
             "max_requests": limiter.max_requests,
             "period_seconds": limiter.period,
         },
         "workloads": workloads,
+    }
+
+
+def store_payload(gateway: Gateway) -> dict[str, Any] | None:
+    store = gateway.store
+    if store is None:
+        return None
+    return {
+        "entries": len(store),
+        "used_bytes": store.used_bytes,
+        "occupancy": round(store.occupancy, 4),
+        "evictions": store.stats.evictions,
+        "evicted_bytes": store.stats.evicted_bytes,
+        "too_large": store.stats.too_large,
+        "unstorable": store.stats.unstorable,
     }
