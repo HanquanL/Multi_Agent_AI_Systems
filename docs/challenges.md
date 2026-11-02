@@ -234,6 +234,27 @@ Correctness of reused responses can only be measured where ground truth exists (
 Completion caching itself is not new (e.g. GPTCache); we do not claim dependency-based invalidation
 is novel until we have compared it with existing work, and aim to show a measured advantage instead.
 
+## C15. A lock-based limiter cannot apply an allocation policy
+*2026-10-27, while adding per-workload quotas*
+
+**Problem.** The first limiter made callers take turns holding a lock: whoever held it waited for
+room in the window, took a slot and left. That gives strict arrival order and nothing else. A
+policy such as per-workload quotas has to see every waiting request to choose among them, and the
+lock holder only knows about itself. Choosing inside the lock would also make an already admitted
+caller wait behind a blocked one.
+
+**Resolution.** Callers now join a waiting list and await their own future. One dispatcher task is
+the only code that admits callers or sleeps on the window: when there is room it asks the policy
+(`AllocationPolicy.choose`) which waiter goes next, given admissions per workload in the current
+window. The old guarantees carry over: only the dispatcher admits, so the window limit holds;
+cancelled or timed-out waiters are dropped before choosing and use no slot; `close()` fails all
+waiters and stops the dispatcher. The first policy, `QuotaFIFO`, is arrival order with a per-workload
+cap, lending idle capacity to whoever is waiting (F20).
+
+**Side effect in tests.** The simulated clock used to jump forward without yielding. With a
+dispatcher, it could admit a caller and jump time again before that caller ran, so the caller
+recorded the wrong time. `FakeClock.sleep` now yields to the event loop once before jumping.
+
 ## Out of scope, by choice
 
 Hot keys, partitioning, replication, and distributed NoSQL databases were considered and left out

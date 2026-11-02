@@ -189,3 +189,16 @@ Six agent requests cost one SEC request in this run. That is a demonstration, no
 saving: one key, three agents, two rounds. Real savings and stale-answer rates are for the
 evaluation harness.
 Raw output: [runs/2026-10-26-demo-three-clients.txt](runs/2026-10-26-demo-three-clients.txt)
+
+## F20. Per-workload quotas split the limit even when one workload arrives first
+*2026-10-27 · verified (offline tests, simulated clock)*
+
+In `test_quotas_split_each_window`, the limit is 4 per second and workloads A and B have a quota of
+2 each. All 8 of A's requests are queued before any of B's. Plain arrival order would give A the
+first two seconds entirely; with `QuotaFIFO`, every one-second window admits exactly two A and two
+B, and all 16 requests finish at simulated time 3.0 s. When B is idle, A may use the whole limit
+(`test_idle_capacity_is_borrowed`: four A requests with quota 1, all admitted at t = 0), so quotas
+cost no throughput. Workloads not in the configuration share one `default` bucket. The rate gate
+tests from F8 still pass unchanged on the new limiter.
+
+Suite: 94 offline tests in 1.18 s (was about 1.07 s for 87), so the dispatcher adds no visible cost.
