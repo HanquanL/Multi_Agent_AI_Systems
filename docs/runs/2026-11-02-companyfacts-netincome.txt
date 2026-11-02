@@ -1,0 +1,42 @@
+Live EDGAR exploration, 2026-11-02: Apple companyfacts, NetIncomeLoss facts ending in 2024 (F23)
+
+One request through the project's EDGAR connector, run in a Python REPL:
+  uv run --env-file .env python
+
+Code:
+  import asyncio
+  from multi_agent_ai_systems.config import sec_user_agent
+  from multi_agent_ai_systems.connectors.edgar import EdgarConnector, companyfacts_key
+
+  async def main():
+      async with EdgarConnector(sec_user_agent()) as conn:
+          rec = await conn.fetch(companyfacts_key("320193"))
+      gaap = rec.data["facts"]["us-gaap"]
+      print("revenue-like:", [c for c in gaap if "Revenue" in c])
+      facts = gaap["NetIncomeLoss"]["units"]["USD"]
+      print("fields:", sorted(facts[0]))
+      for f in facts:
+          if f["end"].startswith("2024"):
+              print(f.get("start"), f["end"], f["fy"], f["fp"], f["form"], f["filed"], f["accn"], f.get("frame"), f["val"])
+
+  asyncio.run(main())
+
+Output (columns: start end fy fp form filed accn frame val):
+revenue-like: ['ContractWithCustomerLiabilityRevenueRecognized', 'DeferredRevenueCurrent', 'DeferredRevenueNoncurrent', 'IncreaseDecreaseInDeferredRevenue', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'Revenues', 'SalesRevenueNet', 'SalesRevenueServicesGross']
+fields: ['accn', 'end', 'filed', 'form', 'fp', 'fy', 'start', 'val']
+2023-10-01 2024-03-30 2024 Q2 10-Q 2024-05-03 0000320193-24-000069 None 57552000000
+2023-10-01 2024-03-30 2025 Q2 10-Q 2025-05-02 0000320193-25-000057 None 57552000000
+2023-12-31 2024-03-30 2024 Q2 10-Q 2024-05-03 0000320193-24-000069 None 23636000000
+2023-12-31 2024-03-30 2025 Q2 10-Q 2025-05-02 0000320193-25-000057 CY2024Q1 23636000000
+2023-10-01 2024-06-29 2024 Q3 10-Q 2024-08-02 0000320193-24-000081 None 79000000000
+2023-10-01 2024-06-29 2025 Q3 10-Q 2025-08-01 0000320193-25-000073 None 79000000000
+2024-03-31 2024-06-29 2024 Q3 10-Q 2024-08-02 0000320193-24-000081 None 21448000000
+2024-03-31 2024-06-29 2025 Q3 10-Q 2025-08-01 0000320193-25-000073 CY2024Q2 21448000000
+2023-10-01 2024-09-28 2024 FY 10-K 2024-11-01 0000320193-24-000123 None 93736000000
+2023-10-01 2024-09-28 2025 FY 10-K 2025-10-31 0000320193-25-000079 CY2024 93736000000
+2024-09-29 2024-12-28 2025 Q1 10-Q 2025-01-31 0000320193-25-000008 None 36330000000
+2024-09-29 2024-12-28 2026 Q1 10-Q 2026-01-30 0000320193-26-000006 CY2024Q4 36330000000
+
+Notes:
+- "fields" lists the keys of the first fact only; "frame" is absent there but present on some facts.
+- No 3-month fact ends 2024-09-28 (Apple's fiscal Q4 2024): it exists only inside the annual value.

@@ -136,6 +136,11 @@ a day later would have cost two requests and about 4 MB of download for no new i
 snapshots of one company are anecdotal, but this is the kind of waste (category 2: refetch after TTL
 expiry with unchanged data) the request profiling will measure.
 
+**Update 2026-11-02.** The `submissions` version changed between 2026-10-26 and 2026-11-02, from
+`0001140361-26-040540` (163,917 bytes) to `0001140361-26-041201` (163,586 bytes), seen in the F22
+run. The new accession number again starts with the filing agent's CIK (see F3); its form type was
+not checked. The size went down, so a newer version does not mean more data.
+
 ## F15. A stale hit is invisible to the TTL but visible in the label
 *2026-10-23 · verified (offline test, simulated clock)*
 
@@ -218,3 +223,48 @@ With workload identity passed from `get_record` down to the rate limiter:
 `gateway_stats` now reports hits, misses, fetches started, slots used and longest wait per workload.
 Workload names are caller-supplied and unverified until access keys exist (C14). Suite: 100 offline
 tests in 1.29 s.
+
+## F22. Records survive a restart and are reused without a new SEC request
+*2026-11-02 · verified (live run)*
+
+Server started with `--db gateway.db`; `scripts/demo_3_clients.py` run, the server stopped and
+started again with the same command, and the demo run again 4.8 minutes later.
+
+| | Round 1 served from | Round 2 served from | SEC requests |
+|---|---|---|---|
+| Run 1 (cold) | upstream, 3 merged into 1 | memory cache | 1 |
+| Run 2 (after restart) | 1 from the SQLite store, 2 from memory | memory cache | 0 |
+
+In run 2 the first request to arrive read the record from SQLite (`store_hits: 1`) and copied it
+into memory; the other five requests were memory hits. Store reads are synchronous, so only one
+disk read happened for the key. The age continued across the restart (287.6 s, matching the time
+between runs) because the store records wall-clock time: restarting does not reset the TTL.
+Without the store, run 2 would have cost a new SEC request. Offline: 111 tests.
+Raw output: [runs/2026-11-02-store-restart.txt](runs/2026-11-02-store-restart.txt)
+
+## F23. Financial period identification and duplicate observations in SEC EDGAR
+*2026-11-02 · verified (live, Apple only)*
+
+Examining Apple's `companyfacts` (all `NetIncomeLoss` facts ending in 2024) showed several
+challenges for deterministic fact retrieval:
+
+1. The `fy` and `fp` fields can describe the filing that contains a fact rather than the period the
+   fact measures. Apple's FY2024 net income (2023-10-01 to 2024-09-28, $93,736,000,000) appears with
+   `fy=2024 FY` in the 2024 10-K and with `fy=2025 FY` in the 2025 10-K, as a comparative.
+2. Historical values can appear in several filings, including later comparative disclosures, so one
+   reporting period can have several observations. Here every period in 2024 appeared twice, with
+   equal values.
+3. Quarterly filings can contain both standalone quarterly values and year-to-date values for the
+   same end date (fiscal Q2 2024: 3 months $23,636,000,000; 6 months $57,552,000,000). Only the
+   period duration tells them apart.
+4. Fiscal Q4 may lack a directly reported standalone quarterly fact. No 3-month fact ends on
+   2024-09-28; that quarter exists only inside the annual value. It must be reported as unavailable
+   or carefully derived.
+5. Calendar-based `frame` labels (e.g. `CY2024Q1` for Apple's fiscal Q2) appear on only one of the
+   duplicate observations and should not be treated as authoritative fiscal-period identifiers.
+
+Apple reports revenue under several concept names across years
+(`RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet`). These
+findings motivate explicit period-resolution rules, source provenance on every answer, and
+conservative handling of ambiguous or unavailable facts; see [xbrl-selection.md](xbrl-selection.md).
+Raw output: [runs/2026-11-02-companyfacts-netincome.txt](runs/2026-11-02-companyfacts-netincome.txt)
