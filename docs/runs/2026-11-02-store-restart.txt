@@ -1,0 +1,107 @@
+Live EDGAR run, 2026-11-02: record store survives a server restart (F22)
+
+Server (terminal 1), started before each run with the same command:
+  uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --db gateway.db
+Demo (terminal 2):
+  uv run python scripts/demo_3_clients.py
+Between run 1 and run 2 the server was stopped (Ctrl+C) and started again.
+
+=== Run 1 (cold start, empty gateway.db) ===
+round 1:
+  agent-1: source=upstream version=0001140361-26-041201 age=0.00s
+  agent-2: source=upstream version=0001140361-26-041201 age=0.00s
+  agent-3: source=upstream version=0001140361-26-041201 age=0.00s
+round 2:
+  agent-1: source=cache    version=0001140361-26-041201 age=0.09s
+  agent-2: source=cache    version=0001140361-26-041201 age=0.09s
+  agent-3: source=cache    version=0001140361-26-041201 age=0.10s
+
+upstream requests to SEC: 1
+{
+  "hits": 3,
+  "store_hits": 0,
+  "misses": 3,
+  "upstream_fetches": {
+    "first": 1
+  },
+  "upstream_attempts": 1,
+  "cache": {
+    "entries": 1,
+    "used_bytes": 163586,
+    "occupancy": 0.0006,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0
+  },
+  "store": {
+    "entries": 1,
+    "used_bytes": 163586,
+    "occupancy": 0.0002,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "rate_limit": {
+    "max_requests": 8,
+    "period_seconds": 1.0
+  },
+  "workloads": {
+    "default": {
+      "hits": 3,
+      "misses": 3,
+      "fetches_started": 1,
+      "limiter_admitted": 1,
+      "max_wait_seconds": 0.0005
+    }
+  }
+}
+
+=== Run 2 (after restart, same gateway.db) ===
+round 1:
+  agent-1: source=cache    version=0001140361-26-041201 age=287.65s
+  agent-2: source=store    version=0001140361-26-041201 age=287.64s
+  agent-3: source=cache    version=0001140361-26-041201 age=287.65s
+round 2:
+  agent-1: source=cache    version=0001140361-26-041201 age=287.72s
+  agent-2: source=cache    version=0001140361-26-041201 age=287.73s
+  agent-3: source=cache    version=0001140361-26-041201 age=287.73s
+
+upstream requests to SEC: 0
+{
+  "hits": 6,
+  "store_hits": 1,
+  "misses": 0,
+  "upstream_fetches": {},
+  "upstream_attempts": 0,
+  "cache": {
+    "entries": 1,
+    "used_bytes": 163586,
+    "occupancy": 0.0006,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0
+  },
+  "store": {
+    "entries": 1,
+    "used_bytes": 163586,
+    "occupancy": 0.0002,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "rate_limit": {
+    "max_requests": 8,
+    "period_seconds": 1.0
+  },
+  "workloads": {
+    "default": {
+      "hits": 6,
+      "misses": 0,
+      "fetches_started": 0,
+      "limiter_admitted": 0,
+      "max_wait_seconds": 0.0
+    }
+  }
+}

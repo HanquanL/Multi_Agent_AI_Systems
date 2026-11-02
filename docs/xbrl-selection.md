@@ -3,7 +3,7 @@
 *Draft, 2026-11-02. To be reviewed before the resolver is implemented.*
 
 This document specifies how the EDGAR plugin answers `get_fact(company, metric, period)` from a
-company's `companyfacts` record. The rules are deterministic: the same record and the same
+company's `companyfacts` record, using its `submissions` record for each filing's report date. The rules are deterministic: the same record and the same
 question always give the same answer or the same error. They are written before the code so that
 the resolver, its tests, and the evaluation all follow one definition. Background: F23 in
 [findings.md](findings.md).
@@ -25,17 +25,18 @@ Anything else is rejected with an error before any record is fetched.
 
 Each metric has a fact type and a list of allowed XBRL concepts (taxonomy `us-gaap`).
 
-| Metric | Type | Allowed concepts | Unit |
-|---|---|---|---|
-| `Revenue` | duration | `RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet` | USD |
-| `NetIncome` | duration | `NetIncomeLoss` | USD |
-| `OperatingIncome` | duration | `OperatingIncomeLoss` | USD |
-| `EPSDiluted` | duration | `EarningsPerShareDiluted` | USD/shares |
-| `TotalAssets` | instant | `Assets` | USD |
-| `CashAndEquivalents` | instant | `CashAndCashEquivalentsAtCarryingValue` | USD |
+| Metric | Type | Allowed concepts | Unit | Checked against Apple data |
+|---|---|---|---|---|
+| `Revenue` | duration | `RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet` | USD | concept names present (2026-11-02); periods not yet checked |
+| `NetIncome` | duration | `NetIncomeLoss` | USD | yes (2026-11-02) |
+| `OperatingIncome` | duration | `OperatingIncomeLoss` | USD | not yet |
+| `EPSDiluted` | duration | `EarningsPerShareDiluted` | USD/shares | not yet |
+| `TotalAssets` | instant | `Assets` | USD | not yet |
+| `CashAndEquivalents` | instant | `CashAndCashEquivalentsAtCarryingValue` | USD | not yet |
 
-The concept lists are a set of allowed names, not a priority order (R5). They will need review
-against more companies than Apple before the evaluation.
+The concept lists are a set of allowed names, not a priority order (R5). A metric counts as tested
+only after its presence, unit and periods have been checked against saved Apple data. The lists
+will need review against more companies before the evaluation.
 
 ## Rules
 
@@ -49,11 +50,16 @@ a later comparative or amendment must never influence an answer simulated earlie
   example a 6- or 9-month year-to-date value) is not used.
 - Instant facts have no start date and are identified by their `end` date alone.
 
-**R3. Period labels.** A filing's own period ends at the latest `end` date among all facts in the
-record that carry that filing's `accn`, across all concepts. A reporting period is labelled with the `fy` and `fp` of a filing
-in which it is the filing's own period; values from filings where it is only a comparative never
-supply a label. For example, FY2024 (ending 2024-09-28) is named by the 2024 10-K, whose own period
-ends on that date, and not by the 2025 10-K, whose own period ends 2025-09-27.
+**R3. Period labels.** A reporting period is labelled with the `fy` and `fp` of a filing in which it
+is the filing's own period; values from filings where it is only a comparative never supply a
+label. For example, FY2024 (ending 2024-09-28) is named by the 2024 10-K, whose own period ends on
+that date, and not by the 2025 10-K, whose own period ends 2025-09-27.
+
+A filing's own period end is its **report date** from the company's `submissions` record
+(`filings.recent.reportDate`, matched by accession number). Fallback, only when the accession is
+not listed there: the latest `end` date among that filing's facts, accepted only if that filing has
+a fact of the matching length ending on that date (annual for `fp = FY`, quarter for `Q1..Q3`);
+otherwise the result is an "unresolved period" error.
 - `fp = FY` gives `FY{fy}`; `fp = Q1..Q3` gives `{fy}Q{n}`.
 - An instant fact takes the label of the filing whose own period ends on its date: the year-end
   balance for `FY{fy}`, the quarter-end balance for `{fy}Q{n}`.
@@ -77,8 +83,12 @@ among them by filing date; one concept never overrides a more recently filed fac
   "not reported" error. The plugin does not derive Q4 in the first version.
 - `latest_reported_quarter`: the labelled quarter period with the latest end date that has a
   quarter-length fact.
-- For instant metrics, `latest_quarter` and `latest_reported_quarter` both mean the most recent
-  labelled quarter-end or year-end balance, and `latest_annual` the most recent year-end balance.
+- For instant metrics, `FY2024` is the balance at the FY2024 year-end and `2024Q2` the balance at
+  the fiscal Q2 end. `latest_annual` is the most recent fiscal year-end balance. `latest_quarter`
+  is the most recent fiscal quarter-end balance, including the Q4 balance reported in a 10-K (a
+  balance at year-end is also the Q4 quarter-end balance). `latest_reported_quarter` is the same as
+  `latest_quarter` for instant metrics.
+- For duration metrics, a fiscal Q4 that cannot be resolved is never replaced by Q3.
 
 **R7. Errors, not guesses.** Unsupported inputs, unknown companies, no eligible fact for the
 period, unresolved labels, and ambiguous values are returned as explicit errors. The resolver never
@@ -91,17 +101,22 @@ year-to-date).
 
 ## Dependencies
 
-The answer records what it relied on, as probes on the `companyfacts` record (versioned so a rule
+The answer records what it relied on, as probes on the records it read (versioned so a rule
 change cannot silently keep old answers):
 
-| Probe | Expected value | Changes when |
-|---|---|---|
-| `fact.v1:{metric}:{start}..{end}` (or `@{end}` for instants) | `(value, accn, filed)` chosen by R4 | the value is restated or a newer filing reports it |
-| `label.v1:{period}` | the `(start, end)` the label resolved to | a label resolves differently (rare) |
-| `latest.v1:{metric}:{selector}` | the period the selector resolved to (only for `latest_*` questions) | a new period is reported |
+| Record | Probe | Expected value | Changes when |
+|---|---|---|---|
+| `companyfacts` | `fact.v1:{metric}:{start}..{end}` (or `@{end}` for instants) | `(value, accn, filed)` chosen by R4 | the value is restated or a newer filing reports it |
+| `companyfacts` | `label.v1:{period}` | the `(start, end)` the label resolved to | a label resolves differently (rare) |
+| `companyfacts` | `latest.v1:{metric}:{selector}` | the period the selector resolved to (only for `latest_*` questions) | a new period is reported |
+| `submissions` | `reportdate.v1:{accn}` | the report date of the labelling filing | the filing's report date changes (should not happen) |
 
-A cached answer is reusable only when the `companyfacts` record it is checked against is fresh
-enough under the record layer's policy and every probe returns its expected value. If freshness
+The `submissions` record changes with every filing of any type (F3), but the `reportdate` probe
+only looks at one accession, so those changes do not invalidate the answer. This is the
+fact-aware behaviour the research compares with whole-record versions.
+
+A cached answer is reusable only when every record it is checked against is fresh enough under
+the record layer's policy and every probe returns its expected value. If freshness
 cannot be established, the outcome is unknown, and the caller's `max_age` decides.
 
 ## Worked example (Apple, from the 2026-11-02 data)
@@ -125,10 +140,21 @@ cannot be established, the outcome is unknown, and the caller's `max_age` decide
 8. `latest_quarter` right after a 10-K gives "not reported"; `latest_reported_quarter` gives Q3.
 9. A metric reported under two concepts in different years resolves by filing date, not concept
    order.
+10. The labelling filing's own period comes from the `submissions` report date; the fallback is
+    used only for an accession missing there, and an inconsistent fallback gives "unresolved
+    period".
+11. For an instant metric, `latest_quarter` right after a 10-K returns the year-end (Q4) balance.
+
+The rows recorded so far cover test cases 1 to 3 and 8. The others need either more saved Apple
+data (instant metrics, `submissions` report dates) or small hand-built records.
 
 ## Known limits of this version
 
-- Rules checked against one company (Apple) only.
+- Rules checked against one company (Apple) only; four of the six metrics not yet checked at all.
+- `filings.recent` in `submissions` lists only a company's most recent filings; older report
+  dates are in additional files that this version does not fetch, so older periods rely on the
+  fallback in R3.
+- All of this logic lives in the EDGAR plugin; the gateway core stays domain-agnostic.
 - No Q4 derivation, no segment or dimensional facts, no non-USD units, no IFRS (`ifrs-full`)
   filers.
 - The ticker list is fetched from SEC; a ticker that changed hands maps to whatever SEC lists now.
