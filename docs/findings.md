@@ -202,3 +202,19 @@ cost no throughput. Workloads not in the configuration share one `default` bucke
 tests from F8 still pass unchanged on the new limiter.
 
 Suite: 94 offline tests in 1.18 s (was about 1.07 s for 87), so the dispatcher adds no visible cost.
+
+## F21. Only the workload that starts a fetch pays for it
+*2026-11-02 · verified (offline tests, simulated clock)*
+
+With workload identity passed from `get_record` down to the rate limiter:
+
+- Workloads A, B and C ask for the same key at once: the source is called once, A (first) is
+  charged one limiter slot, and B and C use none of their share. A cache hit uses no share either.
+- Through the whole gateway (`test_quota_protects_a_workload_that_arrives_late`), at 4 requests per
+  second with quotas A = 2 and B = 2, A queues 8 fetches before B queues 4. B's longest wait is
+  1.0 s; plain arrival order would make it 2.0 s. Once B is done, A uses the whole limit, so A's
+  longest wait is 2.0 s instead of 3.0 s: quotas cost no throughput.
+
+`gateway_stats` now reports hits, misses, fetches started, slots used and longest wait per workload.
+Workload names are caller-supplied and unverified until access keys exist (C14). Suite: 100 offline
+tests in 1.29 s.
