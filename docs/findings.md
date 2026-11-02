@@ -264,7 +264,16 @@ challenges for deterministic fact retrieval:
    duplicate observations and should not be treated as authoritative fiscal-period identifiers.
 
 Apple reports revenue under several concept names across years
-(`RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet`). These
+(`RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet`).
+
+A second check the same day covered the other five metrics in the spec. Revenue (current concept),
+operating income and diluted EPS show the same pattern as net income: two observations per 2024
+period, year-to-date values next to quarter values, and no 3-month fact for fiscal Q4. Total assets
+and cash are instant facts (no start date); each year-end balance (2024-09-28) appeared in five
+filings: the 2024 10-K and, as the prior year-end comparative, the three 2025 10-Qs and the 2025
+10-K. The `submissions` record lists each filing's `reportDate` (2024 10-K: 2024-09-28) and
+`acceptanceDateTime`, which give the filing metadata the selection rules need. These
 findings motivate explicit period-resolution rules, source provenance on every answer, and
 conservative handling of ambiguous or unavailable facts; see [xbrl-selection.md](xbrl-selection.md).
-Raw output: [runs/2026-11-02-companyfacts-netincome.txt](runs/2026-11-02-companyfacts-netincome.txt)
+Raw output: [runs/2026-11-02-companyfacts-netincome.txt](runs/2026-11-02-companyfacts-netincome.txt),
+[runs/2026-11-02-companyfacts-metrics.txt](runs/2026-11-02-companyfacts-metrics.txt)

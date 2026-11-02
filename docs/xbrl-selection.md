@@ -27,12 +27,16 @@ Each metric has a fact type and a list of allowed XBRL concepts (taxonomy `us-ga
 
 | Metric | Type | Allowed concepts | Unit | Checked against Apple data |
 |---|---|---|---|---|
-| `Revenue` | duration | `RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet` | USD | concept names present (2026-11-02); periods not yet checked |
-| `NetIncome` | duration | `NetIncomeLoss` | USD | yes (2026-11-02) |
-| `OperatingIncome` | duration | `OperatingIncomeLoss` | USD | not yet |
-| `EPSDiluted` | duration | `EarningsPerShareDiluted` | USD/shares | not yet |
-| `TotalAssets` | instant | `Assets` | USD | not yet |
-| `CashAndEquivalents` | instant | `CashAndCashEquivalentsAtCarryingValue` | USD | not yet |
+| `Revenue` | duration | `RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet` | USD | first concept: yes, 2024 periods; `Revenues` and `SalesRevenueNet` present but their periods not checked |
+| `NetIncome` | duration | `NetIncomeLoss` | USD | yes, 2024 periods |
+| `OperatingIncome` | duration | `OperatingIncomeLoss` | USD | yes, 2024 periods |
+| `EPSDiluted` | duration | `EarningsPerShareDiluted` | USD/shares | yes, 2024 periods |
+| `TotalAssets` | instant | `Assets` | USD | yes, 2024 dates |
+| `CashAndEquivalents` | instant | `CashAndCashEquivalentsAtCarryingValue` | USD | yes, 2024 dates |
+
+All checks: 2026-11-02, Apple only; raw output in
+[runs/2026-11-02-companyfacts-netincome.txt](runs/2026-11-02-companyfacts-netincome.txt) and
+[runs/2026-11-02-companyfacts-metrics.txt](runs/2026-11-02-companyfacts-metrics.txt).
 
 The concept lists are a set of allowed names, not a priority order (R5). A metric counts as tested
 only after its presence, unit and periods have been checked against saved Apple data. The lists
@@ -69,8 +73,10 @@ otherwise the result is an "unresolved period" error.
 **R4. Choosing the value.** Among all eligible facts for the exact period, across all allowed
 concepts of the metric, take the one with the latest `filed` date. This lets restatements and
 amendments replace earlier values. If several facts share that latest date and their values
-differ, the result is an "ambiguous value" error. Accession numbers are not used to break ties:
-their prefix is the filer agent's CIK, so their order says nothing about time (F3).
+differ, the one whose filing has the latest `acceptanceDateTime` in the `submissions` record wins.
+If that timestamp is missing for any of them, or also tied, the result is an "ambiguous value"
+error. Accession numbers are not used to break ties: their prefix is the filer agent's CIK, so
+their order says nothing about time (F3).
 
 **R5. Concepts.** The metric's concept list only decides which facts are eligible. R4 then chooses
 among them by filing date; one concept never overrides a more recently filed fact in another.
@@ -110,6 +116,7 @@ change cannot silently keep old answers):
 | `companyfacts` | `label.v1:{period}` | the `(start, end)` the label resolved to | a label resolves differently (rare) |
 | `companyfacts` | `latest.v1:{metric}:{selector}` | the period the selector resolved to (only for `latest_*` questions) | a new period is reported |
 | `submissions` | `reportdate.v1:{accn}` | the report date of the labelling filing | the filing's report date changes (should not happen) |
+| `submissions` | `accepted.v1:{accn}` | the acceptance time, only when R4 used it to break a tie | the filing's acceptance time changes (should not happen) |
 
 The `submissions` record changes with every filing of any type (F3), but the `reportdate` probe
 only looks at one accession, so those changes do not invalidate the answer. This is the
@@ -145,12 +152,18 @@ cannot be established, the outcome is unknown, and the caller's `max_age` decide
     period".
 11. For an instant metric, `latest_quarter` right after a 10-K returns the year-end (Q4) balance.
 
-The rows recorded so far cover test cases 1 to 3 and 8. The others need either more saved Apple
-data (instant metrics, `submissions` report dates) or small hand-built records.
+The saved Apple rows cover test cases 1 to 4, 8, 10 (report dates) and 11. Cases 5 to 7 and 9
+need small hand-built records, since Apple's 2024 data contains no restatement, no same-day
+conflict and no concept change.
 
 ## Known limits of this version
 
-- Rules checked against one company (Apple) only; four of the six metrics not yet checked at all.
+- Rules checked against one company (Apple) and 2024 periods only.
+- Instant balances are heavily duplicated: Apple's 2024 year-end balances appear in five filings,
+  four of them as comparatives. R3 and R4 handle this, but it multiplies the facts each question
+  must scan.
+- Q4 derivation is deliberately absent. It is not a simple subtraction for every metric: diluted
+  EPS for Q4 is not annual EPS minus nine-month EPS, because share counts differ by period.
 - `filings.recent` in `submissions` lists only a company's most recent filings; older report
   dates are in additional files that this version does not fetch, so older periods rely on the
   fallback in R3.

@@ -1,0 +1,40 @@
+Live EDGAR run, 2026-10-26: three MCP clients share one gateway over HTTP (F19)
+
+Server (terminal 1):
+  uv run --env-file .env python -m multi_agent_ai_systems --http 8000
+Demo (terminal 2):
+  uv run python scripts/demo_3_clients.py
+
+Output:
+round 1:
+  agent-1: source=upstream version=0001140361-26-040540 age=0.00s
+  agent-2: source=upstream version=0001140361-26-040540 age=0.00s
+  agent-3: source=upstream version=0001140361-26-040540 age=0.00s
+round 2:
+  agent-1: source=cache    version=0001140361-26-040540 age=0.08s
+  agent-2: source=cache    version=0001140361-26-040540 age=0.09s
+  agent-3: source=cache    version=0001140361-26-040540 age=0.09s
+
+upstream requests to SEC: 1
+{
+  "hits": 3,
+  "misses": 3,
+  "upstream_fetches": {
+    "first": 1
+  },
+  "upstream_attempts": 1,
+  "cache": {
+    "entries": 1,
+    "used_bytes": 163917,
+    "occupancy": 0.0006,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0
+  },
+  "rate_limit": {
+    "max_requests": 8,
+    "period_seconds": 1.0
+  }
+}
+
+Note: saved on 2026-11-02 from the output pasted in the working session on 2026-10-26.
