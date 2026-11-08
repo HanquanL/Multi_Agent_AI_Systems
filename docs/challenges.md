@@ -234,6 +234,60 @@ Correctness of reused responses can only be measured where ground truth exists (
 Completion caching itself is not new (e.g. GPTCache); we do not claim dependency-based invalidation
 is novel until we have compared it with existing work, and aim to show a measured advantage instead.
 
+**Revised 2026-11-02: the gateway calls the LLM.** The architecture is now: users and AI
+applications → shared gateway → external data APIs and external or local LLMs. Applications never
+call an API or an LLM directly, and the project's goal is to save both API cost and LLM cost. The
+resolution above, in which the gateway runs no LLM, is replaced:
+
+- The gateway calls the LLM itself, through one connector for the OpenAI-compatible chat API. It
+  reaches hosted providers and a local Ollama model alike. One model at a time, text only, no
+  streaming, no model routing.
+- The gateway builds the exact-match key from the full request: model and model version, messages,
+  and generation settings. It no longer has to trust a fingerprint made by the application.
+- On a miss, the response is stored automatically; a workload can opt out. Only reusable requests
+  are cached or merged (temperature 0, or the caller allows reuse), so two callers never silently
+  share one random sample.
+- Identical concurrent requests share one generation, as with data requests. Each provider has its
+  own limits on requests and tokens per minute, and per-workload quotas apply.
+- Tokens and calls are counted per workload, both sent and avoided, and priced per model from a
+  configuration table. A local model is reported in tokens and compute time, since its price is zero.
+- Unchanged: exact matching only, the shared dependency and invalidation framework, reuse only within
+  the storing workload until callers can be identified, and the "generated, unverified" label.
+  A lookup from application code before calling the gateway remains possible but is no longer the
+  main path.
+
+Why: while applications called their own LLMs, the gateway could not merge identical generations,
+enforce provider limits, or measure LLM cost. Routing every LLM call through the gateway gives it
+all three. Tests use a fake provider, live runs use Ollama, and one small live run uses a hosted
+free tier; external LLM cost is computed from published prices, not spent.
+
+Requirements agreed before implementation:
+
+- **Dependency provenance.** The gateway never infers dependencies from free-text prompts. The
+  application passes the facts it needs as specifications (company, metric, period), not values.
+  The gateway resolves them itself through the `get_fact` path, adds them to the prompt as context,
+  builds the key from the specifications (not the values), and stores the answer with those facts'
+  probes as dependencies. On a repeat request, matching probes return the stored answer with no LLM
+  call; a changed fact means the facts are resolved again and a new answer is generated; unknown
+  freshness is decided by the caller's `max_age`. Because the gateway resolved the facts, the
+  dependencies are validated, not claimed. If the application put fact values into its own prompt,
+  a changed value would change the key and the old answer would simply never be hit again, so
+  dependencies would add nothing; specifications are what make invalidation useful. A request with
+  no facts uses expiry only.
+- **Cost accounting.** Three separate counters, never added together: estimated hosted-model cost
+  (tokens times the configured price, labelled as an estimate, not a bill), local inference resource
+  use (generation time measured at the gateway, and tokens; provider billing is zero but compute is
+  not), and gateway overhead (delay added per request). Each is reported both as spent and as
+  avoided through hits and merges.
+- **Acceptance test.** Agent A generates an answer through the gateway; the gateway restarts; 24
+  hours pass; Agent B, in the same workload, sends the same request and receives the stored answer
+  with no LLM call. Offline: two gateway instances on one SQLite file with the wall clock advanced
+  24 hours, asserting one provider call in total. Live: once with Ollama, with a real restart and at
+  least 24 real hours in between, saved under `docs/runs/`. This needs a response lifetime separate
+  from the record TTL and at least 24 hours long. The test asserts no LLM call, not no upstream
+  call: if a source record has expired, checking an answer's fact dependencies may cost one data
+  request.
+
 ## C15. A lock-based limiter cannot apply an allocation policy
 *2026-10-27, while adding per-workload quotas*
 
