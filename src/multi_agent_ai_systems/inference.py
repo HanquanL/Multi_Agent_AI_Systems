@@ -23,11 +23,12 @@ from multi_agent_ai_systems.llm import (
     Completion,
     GenerationRequest,
     InferenceProvider,
-    request_key,
     estimate_tokens,
+    request_key,
 )
 from multi_agent_ai_systems.merging import RequestMerger
 from multi_agent_ai_systems.ratelimit import RateLimiter
+from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import Validity, ValidityPolicy
 
 
@@ -39,7 +40,7 @@ class Generation:
     finish_reason: str
     model: str
     model_version: str
-    source: str  # "cache", "merged" or "upstream"
+    source: str  # "cache" (memory), "store" (disk), "merged" or "upstream"
     age_seconds: float  # how long the response has been stored; 0 if just generated
     answer_kind: str = "generated"  # unverified, unlike an answer computed from source data
 
@@ -47,6 +48,7 @@ class Generation:
 @dataclass
 class InferenceCounts:
     cache_hits: int = 0
+    store_hits: int = 0
     merged: int = 0  # joined a generation already in flight
     misses: int = 0  # looked in the cache and had to go on
     calls: int = 0  # generations this workload started; joiners are not charged
@@ -85,6 +87,7 @@ class InferenceGateway:
         max_attempts: int = 1,
         backoff_seconds: float = 1.0,
         allocation: AllocationPolicy | None = None,
+        store: SQLiteRecordStore | None = None,
         clock: Clock | None = None,
     ):
         if max_attempts < 1:
@@ -92,6 +95,7 @@ class InferenceGateway:
         self._clock = clock or RealClock()
         self.provider = provider
         self.cache = cache
+        self.store = store #None: memory only
         self.policy = policy  # the response lifetime, separate from the data records' TTL
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
@@ -140,15 +144,15 @@ class InferenceGateway:
             model=self.provider.model,
             model_version=version,
         )
-        record = self.cache.get(key)
-        if record is not None:
-            age = self._clock.now() - self._stored_at[key]
-            verdict = self.policy.check(record, age, Mutability.OVERWRITTEN)
-            if verdict is Validity.VALID and (max_age is None or age <= max_age):
-                counts.cache_hits += 1
-                _avoid(counts, record.data)
-                self._add_overhead(counts, start, 0.0)
-                return self._generation(record.data, version, "cache", age)
+        found = self._find(key, max_age)
+        if found is not None:
+            record, age, source = found
+            counts.cache_hits += 1
+            if source == "store":
+                counts.store_hits += 1
+            _avoid(counts, record.data)
+            self._add_overhead(counts, start, 0.0)
+            return self._generation(record.data, version, source, age)
 
         counts.misses += 1
         ticket = _Ticket()
@@ -188,9 +192,31 @@ class InferenceGateway:
             fetched_at=datetime.now(UTC),
         )
         # A response cut off by max_tokens is returned but never reused.
-        if completion.finish_reason == "stop" and self.cache.put(record):
-            self._stored_at[key] = self._clock.now()
+        if completion.finish_reason == "stop":
+            if self.store is not None:
+                self.store.put(record)
+            if self.cache.put(record):
+                self._stored_at[key] = self._clock.now()
         return record
+
+    def _find(self, key: str, max_age: float | None) -> tuple[Record, float, str] | None:
+        """A stored response that may still be served: (record, age, where it was)."""
+        record = self.cache.get(key)
+        if record is not None:
+            age = self._clock.now() - self._stored_at[key]
+            return (record, age, "cache") if self._servable(record, age, max_age) else None
+        if self.store is None:
+            return None
+        stored = self.store.get(key)
+        if stored is None or not self._servable(stored.record, stored.age_seconds, max_age):
+            return None
+        if self.cache.put(stored.record):  # keeps its age, so a restart cannot extend its life
+            self._stored_at[key] = self._clock.now() - stored.age_seconds
+        return stored.record, stored.age_seconds, "store"
+
+    def _servable(self, record: Record, age: float, max_age: float | None) -> bool:
+        verdict = self.policy.check(record, age, Mutability.OVERWRITTEN)
+        return verdict is Validity.VALID and (max_age is None or age <= max_age)
 
     async def _call(
         self, request: GenerationRequest, workload: str, agent: str
