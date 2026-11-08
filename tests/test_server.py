@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 from fakes import FakeClock, FakeConnector
 from mcp import Client
 
+from multi_agent_ai_systems.answers import AnswerCache
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.connectors.base import SourceError
+from multi_agent_ai_systems.dependencies import Dependency
 from multi_agent_ai_systems.gateway import FreshnessLabel, Gateway, Response
 from multi_agent_ai_systems.server import build_server, to_payload
 from multi_agent_ai_systems.validity import TTLPolicy
-from multi_agent_ai_systems.answers import AnswerCache
-from multi_agent_ai_systems.dependencies import Dependency
 
 
 def make_server(conn: FakeConnector):
@@ -111,4 +111,5 @@ async def test_plugins_add_tools_and_answer_cache_stats():
         stats = (await client.call_tool("gateway_stats", {})).structured_content
 
     assert names == {"get_record", "gateway_stats", "echo"}
-    assert stats["answers"]["demo"] == {"entries": 1, "outcomes": {"match": 1}, "changed_probes": {}}
+    demo = stats["answers"]["demo"]
+    assert demo == {"entries": 1, "outcomes": {"match": 1}, "changed_probes": {}}

@@ -8,13 +8,14 @@ workloads; the records behind them are fetched and charged like any other reques
 
 from dataclasses import dataclass
 from typing import Any
+
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from multi_agent_ai_systems.connectors.base import NotFoundError, SourceError
 from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD
 from multi_agent_ai_systems.answers import AnswerCache, Outcome
 from multi_agent_ai_systems.cache import RecordCache
+from multi_agent_ai_systems.connectors.base import NotFoundError, SourceError
 from multi_agent_ai_systems.connectors.edgar import (
     companyfacts_key,
     normalize_cik,

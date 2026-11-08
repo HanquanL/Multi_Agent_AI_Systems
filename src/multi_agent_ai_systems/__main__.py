@@ -13,11 +13,11 @@ from multi_agent_ai_systems.allocation import QuotaFIFO
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.config import sec_user_agent
 from multi_agent_ai_systems.connectors.edgar import EdgarConnector
+from multi_agent_ai_systems.connectors.edgar_service import FactService, register_tools
 from multi_agent_ai_systems.gateway import Gateway
 from multi_agent_ai_systems.server import build_server
 from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import TTLPolicy
-from multi_agent_ai_systems.connectors.edgar_service import FactService, register_tools
 
 INSTRUCTIONS = """Shared gateway to SEC EDGAR. Call get_record with one of these keys:
   submissions/<CIK>                              a company's filing list

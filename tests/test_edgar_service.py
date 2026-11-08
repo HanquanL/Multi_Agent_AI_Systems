@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 from fakes import FakeClock, FakeConnector
+from mcp import Client
 from test_edgar_facts import (
     APPLE_FACTS,
     APPLE_NET_INCOME,
@@ -19,10 +20,8 @@ from multi_agent_ai_systems.connectors.edgar import companyfacts_key, submission
 from multi_agent_ai_systems.connectors.edgar_facts import FactError
 from multi_agent_ai_systems.connectors.edgar_service import FactService, register_tools
 from multi_agent_ai_systems.gateway import Gateway
-from multi_agent_ai_systems.validity import TTLPolicy
 from multi_agent_ai_systems.server import build_server
-from mcp import Client
-
+from multi_agent_ai_systems.validity import TTLPolicy
 
 HOUR = 3600.0
 FACTS, SUBMISSIONS = companyfacts_key("320193"), submissions_key("320193")

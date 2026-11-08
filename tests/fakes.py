@@ -13,6 +13,12 @@ from multi_agent_ai_systems.connectors.base import (
     Record,
     Versioning,
 )
+from multi_agent_ai_systems.llm import (
+    Completion,
+    GenerationRequest,
+    InferenceProvider,
+    ProviderLimits,
+)
 
 
 class FakeClock:
@@ -75,3 +81,29 @@ class FakeConnector(Connector):
             size_bytes=len(value),
             fetched_at=datetime.now(UTC),
         )
+
+class FakeProvider(InferenceProvider):
+    """In-memory LLM. Counts calls; tests can hold calls open and inject failures."""
+
+    name = "fake-llm"
+    model = "fake-1"
+    limits = ProviderLimits(requests=RateLimit(max_requests=10, period_seconds=1.0))
+
+    def __init__(self, text: str = "an answer", version: str = "v1"):
+        self.text = text
+        self.version = version
+        self.calls = 0
+        self.gate: asyncio.Event | None = None
+        self.failures: list[Exception] = []
+
+    async def model_version(self) -> str:
+        return self.version
+
+    async def generate(self, request: GenerationRequest) -> Completion:
+        self.calls += 1
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.failures:
+            raise self.failures.pop(0)
+        prompt_tokens = sum(len(m.content.split()) for m in request.messages)
+        return Completion(self.text, prompt_tokens, len(self.text.split()), "stop")

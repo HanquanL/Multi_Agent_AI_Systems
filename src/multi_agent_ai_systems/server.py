@@ -4,17 +4,16 @@ Run one server over streamable HTTP so all agents share one gateway (one cache, 
 limiter). Over stdio, every agent starts its own server process and nothing is shared.
 """
 
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from collections.abc import Callable, Mapping, Sequence
 
-from multi_agent_ai_systems.answers import AnswerCache
 from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD
+from multi_agent_ai_systems.answers import AnswerCache
 from multi_agent_ai_systems.connectors.base import NotFoundError, SourceError
 from multi_agent_ai_systems.gateway import Gateway, Response, WorkloadCounts
-
 
 
 def build_server(
@@ -84,7 +83,9 @@ def to_payload(response: Response) -> dict[str, Any]:
     }
 
 
-def stats_payload(gateway: Gateway,answers: Mapping[str, AnswerCache] | None = None) -> dict[str, Any]:
+def stats_payload(
+        gateway: Gateway,answers: Mapping[str, AnswerCache] | None = None
+) -> dict[str, Any]:
     stats, cache, limiter = gateway.stats, gateway.cache, gateway.limiter
     workloads = {}
     for bucket in sorted(stats.by_workload.keys() | limiter.stats.keys()):
