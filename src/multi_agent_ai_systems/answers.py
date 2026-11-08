@@ -54,6 +54,9 @@ class AnswerCache:
         self._cache = cache
         self.stats = AnswerStats()
 
+    def __len__(self) -> int:
+        return len(self._cache)
+
     def put(self, key: str, answer: Any, dependencies: Sequence[Dependency]) -> bool:
         """Store a copy of answer. It must be JSON-compatible. Returns False if too large."""
         body = json.dumps({"answer": answer, "dependencies": [asdict(d) for d in dependencies]})

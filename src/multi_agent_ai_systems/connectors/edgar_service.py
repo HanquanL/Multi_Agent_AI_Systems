@@ -8,7 +8,10 @@ workloads; the records behind them are fetched and charged like any other reques
 
 from dataclasses import dataclass
 from typing import Any
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
+from multi_agent_ai_systems.connectors.base import NotFoundError, SourceError
 from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD
 from multi_agent_ai_systems.answers import AnswerCache, Outcome
 from multi_agent_ai_systems.cache import RecordCache
@@ -89,3 +92,46 @@ def fact_payload(fact: Fact) -> dict[str, Any]:
         "filed": fact.filed.isoformat(),
         "answer_kind": fact.answer_kind,
     }
+
+def register_tools(server: MCPServer, service: FactService) -> None:
+    @server.tool()
+    async def get_fact(
+        cik: str,
+        metric: str,
+        period: str,
+        provenance: bool = False,
+        max_age_seconds: float | None = None,
+        workload: str = DEFAULT_WORKLOAD,
+        agent_id: str = "anonymous",
+    ) -> dict[str, Any]:
+        """One reported financial value from a company's SEC filings, with its source.
+
+        metric: Revenue, NetIncome, OperatingIncome, EPSDiluted, TotalAssets, or
+        CashAndEquivalents. period: FY2024 (fiscal year), 2024Q2 (fiscal quarter),
+        latest_annual, latest_quarter, or latest_reported_quarter. The answer gives the value,
+        unit, period, dates, and the filing it came from, and "cache": "match" when it was
+        reused because nothing it depends on changed. It is an error, never a guess, when the
+        filings do not answer the question (for example a fiscal Q4, which companies report
+        only inside the annual value). Set provenance to true if you rely on the answer naming
+        the newest filing that reports the value.
+        """
+        # workload and agent_id are taken on trust until access keys exist.
+        try:
+            result = await service.get_fact(
+                cik,
+                metric,
+                period,
+                provenance=provenance,
+                max_age=max_age_seconds,
+                workload=workload,
+                agent=agent_id,
+            )
+        except FactError as exc:
+            raise ToolError(f"{exc.kind.value}: {exc}") from exc
+        except NotFoundError as exc:
+            raise ToolError(f"not found: no SEC data for CIK {cik}") from exc
+        except ValueError as exc:
+            raise ToolError(f"bad input: {exc}") from exc
+        except SourceError as exc:
+            raise ToolError(f"source error: {exc}") from exc
+        return {**result.answer, "cache": result.outcome.value}

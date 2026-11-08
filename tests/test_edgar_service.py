@@ -17,9 +17,12 @@ from multi_agent_ai_systems.answers import Outcome
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.connectors.edgar import companyfacts_key, submissions_key
 from multi_agent_ai_systems.connectors.edgar_facts import FactError
-from multi_agent_ai_systems.connectors.edgar_service import FactService
+from multi_agent_ai_systems.connectors.edgar_service import FactService, register_tools
 from multi_agent_ai_systems.gateway import Gateway
 from multi_agent_ai_systems.validity import TTLPolicy
+from multi_agent_ai_systems.server import build_server
+from mcp import Client
+
 
 HOUR = 3600.0
 FACTS, SUBMISSIONS = companyfacts_key("320193"), submissions_key("320193")
@@ -112,3 +115,36 @@ async def test_bad_cik_fails_before_any_fetch(setup):
     with pytest.raises(ValueError):
         await service.get_fact("AAPL", "NetIncome", "FY2024")  # tickers come later
     assert conn.calls == 0
+
+def make_server(service):
+    return build_server(
+        service.gateway,
+        tools=[lambda s: register_tools(s, service)],
+        answers={"get_fact": service.answers},
+    )
+
+
+async def test_get_fact_tool_reports_reuse(setup):
+    _, _, service = setup
+    args = {"cik": "320193", "metric": "NetIncome", "period": "FY2024"}
+    async with Client(make_server(service)) as client:
+        first = (await client.call_tool("get_fact", args)).structured_content
+        second = (await client.call_tool("get_fact", args)).structured_content
+        stats = (await client.call_tool("gateway_stats", {})).structured_content
+
+    assert (first["value"], first["period"], first["answer_kind"]) == (
+        93_736_000_000,
+        "FY2024",
+        "exact",
+    )
+    assert (first["cache"], second["cache"]) == ("miss", "match")
+    assert stats["answers"]["get_fact"]["outcomes"] == {"miss": 1, "match": 1}
+
+
+async def test_get_fact_tool_refusal_names_its_kind(setup):
+    _, _, service = setup
+    args = {"cik": "320193", "metric": "NetIncome", "period": "2024Q4"}
+    async with Client(make_server(service)) as client:
+        result = await client.call_tool("get_fact", args)
+    assert result.is_error is True
+    assert "not_reported:" in result.content[0].text

@@ -8,10 +8,13 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from collections.abc import Callable, Mapping, Sequence
 
+from multi_agent_ai_systems.answers import AnswerCache
 from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD
 from multi_agent_ai_systems.connectors.base import NotFoundError, SourceError
 from multi_agent_ai_systems.gateway import Gateway, Response, WorkloadCounts
+
 
 
 def build_server(
@@ -19,6 +22,8 @@ def build_server(
     *,
     name: str = "shared-data-gateway",
     instructions: str | None = None,
+    tools: Sequence[Callable[[MCPServer], None]] = (),
+    answers: Mapping[str, AnswerCache] | None = None,
 ) -> MCPServer:
     server = MCPServer(name, instructions=instructions)
 
@@ -54,9 +59,11 @@ def build_server(
 
     @server.tool()
     async def gateway_stats() -> dict[str, Any]:
-        """Cache, upstream and rate-limit counters for this gateway."""
-        return stats_payload(gateway)
+        """Cache, upstream, rate-limit and answer-cache counters for this gateway."""
+        return stats_payload(gateway, answers)
 
+    for add_tools in tools:  # plugins add their own tools, e.g. a domain's question types
+        add_tools(server)
     return server
 
 
@@ -77,7 +84,7 @@ def to_payload(response: Response) -> dict[str, Any]:
     }
 
 
-def stats_payload(gateway: Gateway) -> dict[str, Any]:
+def stats_payload(gateway: Gateway,answers: Mapping[str, AnswerCache] | None = None) -> dict[str, Any]:
     stats, cache, limiter = gateway.stats, gateway.cache, gateway.limiter
     workloads = {}
     for bucket in sorted(stats.by_workload.keys() | limiter.stats.keys()):
@@ -110,6 +117,7 @@ def stats_payload(gateway: Gateway) -> dict[str, Any]:
             "period_seconds": limiter.period,
         },
         "workloads": workloads,
+        "answers": {name: answers_payload(cache) for name, cache in (answers or {}).items()},
     }
 
 
@@ -125,4 +133,11 @@ def store_payload(gateway: Gateway) -> dict[str, Any] | None:
         "evicted_bytes": store.stats.evicted_bytes,
         "too_large": store.stats.too_large,
         "unstorable": store.stats.unstorable,
+    }
+
+def answers_payload(answers: AnswerCache) -> dict[str, Any]:
+    return {
+        "entries": len(answers),
+        "outcomes": {outcome.value: n for outcome, n in answers.stats.outcomes.items()},
+        "changed_probes": dict(answers.stats.changed_probes),
     }

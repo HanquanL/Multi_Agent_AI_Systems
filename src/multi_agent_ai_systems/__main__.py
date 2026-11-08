@@ -3,6 +3,8 @@
 uv run --env-file .env python -m multi_agent_ai_systems --http 8000   # shared, many agents
 uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --db gateway.db  # + disk
 uv run --env-file .env python -m multi_agent_ai_systems               # stdio, one agent
+Every result has a freshness label: source version, fetch time, age, and cache or source.
+For one financial value with its source filing, call get_fact (e.g. NetIncome, FY2024).
 """
 
 import argparse
@@ -15,6 +17,7 @@ from multi_agent_ai_systems.gateway import Gateway
 from multi_agent_ai_systems.server import build_server
 from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import TTLPolicy
+from multi_agent_ai_systems.connectors.edgar_service import FactService, register_tools
 
 INSTRUCTIONS = """Shared gateway to SEC EDGAR. Call get_record with one of these keys:
   submissions/<CIK>                              a company's filing list
@@ -67,7 +70,13 @@ def main() -> None:
         allocation=QuotaFIFO(dict(args.workload), default_quota=args.default_quota),
         store=SQLiteRecordStore(args.db, args.db_mb * 1_000_000) if args.db else None,
     )
-    server = build_server(gateway, instructions=INSTRUCTIONS)
+    facts = FactService(gateway)
+    server = build_server(
+        gateway,
+        instructions=INSTRUCTIONS,
+        tools=[lambda s: register_tools(s, facts)],
+        answers={"get_fact": facts.answers},
+    )
     if args.http:
         server.run("streamable-http", port=args.http)
     else:

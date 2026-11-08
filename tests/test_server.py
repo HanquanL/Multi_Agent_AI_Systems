@@ -9,6 +9,8 @@ from multi_agent_ai_systems.connectors.base import SourceError
 from multi_agent_ai_systems.gateway import FreshnessLabel, Gateway, Response
 from multi_agent_ai_systems.server import build_server, to_payload
 from multi_agent_ai_systems.validity import TTLPolicy
+from multi_agent_ai_systems.answers import AnswerCache
+from multi_agent_ai_systems.dependencies import Dependency
 
 
 def make_server(conn: FakeConnector):
@@ -91,3 +93,22 @@ def test_bytes_are_returned_as_text():
         key="k", version=None, fetched_at=datetime.now(UTC), age_seconds=0.0, source="upstream"
     )
     assert to_payload(Response(b"<html>", label))["data"] == "<html>"
+
+async def test_plugins_add_tools_and_answer_cache_stats():
+    gateway, _ = make_server(FakeConnector({"a": "x"}))
+    answers = AnswerCache(gateway, lambda probe, bodies: bodies[0], RecordCache(1_000_000))
+    answers.put("q", "x", [Dependency(("a",), "same.v1", "x")])
+    await answers.get("q")
+
+    def add_echo(server):
+        @server.tool()
+        async def echo(text: str) -> str:
+            return text
+
+    server = build_server(gateway, tools=[add_echo], answers={"demo": answers})
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        stats = (await client.call_tool("gateway_stats", {})).structured_content
+
+    assert names == {"get_record", "gateway_stats", "echo"}
+    assert stats["answers"]["demo"] == {"entries": 1, "outcomes": {"match": 1}, "changed_probes": {}}
