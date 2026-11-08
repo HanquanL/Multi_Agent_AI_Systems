@@ -36,6 +36,19 @@ APPLE_FILINGS = """
 0000320193-24-000006 10-Q 2023-12-30 2024-02-02
 """
 
+# Apple Assets facts ending in 2024, as printed in
+# docs/runs/2026-11-02-companyfacts-metrics.txt (instant: no start)
+APPLE_ASSETS = """
+None 2024-03-30 2024 Q2 10-Q 2024-05-03 0000320193-24-000069 337411000000
+None 2024-06-29 2024 Q3 10-Q 2024-08-02 0000320193-24-000081 331612000000
+None 2024-09-28 2024 FY 10-K 2024-11-01 0000320193-24-000123 364980000000
+None 2024-09-28 2025 Q1 10-Q 2025-01-31 0000320193-25-000008 364980000000
+None 2024-09-28 2025 Q2 10-Q 2025-05-02 0000320193-25-000057 364980000000
+None 2024-09-28 2025 Q3 10-Q 2025-08-01 0000320193-25-000073 364980000000
+None 2024-09-28 2025 FY 10-K 2025-10-31 0000320193-25-000079 364980000000
+None 2024-12-28 2025 Q1 10-Q 2025-01-31 0000320193-25-000008 344085000000
+"""
+
 
 def fact_rows(text: str) -> list[tuple]:
     """Fact rows as printed in docs/runs; a start of "None" marks an instant fact."""
@@ -90,7 +103,12 @@ def submissions(filings: list[tuple], accepted: dict[str, str] | None = None) ->
     }
 
 
-APPLE_FACTS = companyfacts({"NetIncomeLoss": ("USD", fact_rows(APPLE_NET_INCOME))})
+APPLE_FACTS = companyfacts(
+    {
+        "NetIncomeLoss": ("USD", fact_rows(APPLE_NET_INCOME)),
+        "Assets": ("USD", fact_rows(APPLE_ASSETS)),
+    }
+)
 APPLE_SUBMISSIONS = submissions(filing_rows(APPLE_FILINGS))
 
 
@@ -136,3 +154,93 @@ def test_comparative_never_labels_a_period():  # spec case 2, R3
 )
 def test_unsupported_inputs_are_rejected(metric, period):  # R7
     assert error_kind(metric, period) is FactErrorKind.UNSUPPORTED
+
+def test_instant_metric_resolves_by_end_date():  # spec case 4, R2/R3
+    fact = resolve("TotalAssets", "FY2024")
+    assert fact.value == 364_980_000_000
+    assert (fact.start, fact.end) == (None, date(2024, 9, 28))
+    assert fact.accn == "0000320193-25-000079"  # five filings report it; the latest wins
+    assert resolve("TotalAssets", "2024Q2").value == 337_411_000_000
+
+
+def test_instant_q4_is_the_year_end_balance():  # R3, R6
+    fact = resolve("TotalAssets", "2024Q4")
+    assert (fact.value, fact.end) == (364_980_000_000, date(2024, 9, 28))
+
+
+def test_replay_ignores_filings_not_yet_public():  # spec case 7, R1
+    fact = resolve("NetIncome", "FY2024", as_of=date(2025, 10, 30))
+    assert (fact.accn, fact.filed) == ("0000320193-24-000123", date(2024, 11, 1))
+    # The day before the 2024 10-K was filed, FY2024 had no label yet.
+    kind = error_kind("NetIncome", "FY2024", as_of=date(2024, 10, 31))
+    assert kind is FactErrorKind.UNRESOLVED_PERIOD
+
+
+# Hand-built records for cases Apple's 2024 data does not contain.
+# Accessions are made up; the CIK prefix 0000000001 is not a real filer.
+ANNUAL_FILINGS = """
+0000000001-24-000001 10-K 2024-09-28 2024-11-01
+0000000001-25-000001 10-K/A 2024-09-28 2025-02-03
+"""
+
+
+def resolve_built(facts: dict, filings: str, metric: str, period: str, **kwargs) -> object:
+    body = submissions(filing_rows(filings), kwargs.pop("accepted", None))
+    return resolve_fact(companyfacts(facts), body, metric, period, **kwargs)
+
+
+def test_restated_value_replaces_the_original():  # spec case 5, R4
+    rows = fact_rows(
+        """
+        2023-10-01 2024-09-28 2024 FY 10-K 2024-11-01 0000000001-24-000001 100
+        2023-10-01 2024-09-28 2024 FY 10-K/A 2025-02-03 0000000001-25-000001 90
+        """
+    )
+    fact = resolve_built({"NetIncomeLoss": ("USD", rows)}, ANNUAL_FILINGS, "NetIncome", "FY2024")
+    assert (fact.value, fact.form, fact.accn) == (90, "10-K/A", "0000000001-25-000001")
+
+
+SAME_DAY = """
+2023-10-01 2024-09-28 2024 FY 10-K 2024-11-01 0000000001-24-000001 100
+2023-10-01 2024-09-28 2024 FY 10-K/A 2024-11-01 0000000001-25-000001 101
+"""
+SAME_DAY_FILINGS = """
+0000000001-24-000001 10-K 2024-09-28 2024-11-01
+0000000001-25-000001 10-K/A 2024-09-28 2024-11-01
+"""
+
+
+def test_same_day_conflict_without_acceptance_time_is_ambiguous():  # spec case 6, R4
+    facts = {"NetIncomeLoss": ("USD", fact_rows(SAME_DAY))}
+    with pytest.raises(FactError) as err:
+        resolve_built(facts, SAME_DAY_FILINGS, "NetIncome", "FY2024")
+    assert err.value.kind is FactErrorKind.AMBIGUOUS_VALUE
+
+
+def test_same_day_conflict_is_broken_by_acceptance_time():  # R4
+    facts = {"NetIncomeLoss": ("USD", fact_rows(SAME_DAY))}
+    accepted = {
+        "0000000001-24-000001": "2024-11-01T16:30:00.000Z",
+        "0000000001-25-000001": "2024-11-01T18:05:00.000Z",
+    }
+    fact = resolve_built(facts, SAME_DAY_FILINGS, "NetIncome", "FY2024", accepted=accepted)
+    assert (fact.value, fact.accn) == (101, "0000000001-25-000001")
+
+
+@pytest.mark.parametrize(
+    ("old_concept", "new_concept"),
+    [
+        ("SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax"),
+        ("RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"),
+    ],
+)
+def test_concept_change_resolves_by_filing_date(old_concept, new_concept):  # spec case 9, R5
+    old = fact_rows("2016-09-25 2017-09-30 2017 FY 10-K 2017-11-03 0000000001-17-000001 229")
+    new = fact_rows("2016-09-25 2017-09-30 2018 FY 10-K 2018-11-05 0000000001-18-000001 230")
+    filings = """
+    0000000001-17-000001 10-K 2017-09-30 2017-11-03
+    0000000001-18-000001 10-K 2018-09-29 2018-11-05
+    """
+    facts = {old_concept: ("USD", old), new_concept: ("USD", new)}
+    fact = resolve_built(facts, filings, "Revenue", "FY2017")
+    assert (fact.value, fact.concept) == (230, new_concept)
