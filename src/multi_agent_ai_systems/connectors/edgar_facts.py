@@ -6,10 +6,14 @@ core never imports this module.
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from typing import Any
+
+from multi_agent_ai_systems.connectors.edgar import companyfacts_key, submissions_key
+from multi_agent_ai_systems.dependencies import Dependency
 
 
 class FactErrorKind(Enum):
@@ -163,6 +167,33 @@ def _filings(submissions: dict[str, Any]) -> dict[str, _Filing]:
         for accn, report, time in zip(accns, reports, accepted, strict=True)
     }
 
+@dataclass(frozen=True)
+class _Context:
+    """What the rules read from a company's two records, for one metric."""
+
+    spec: Metric
+    rows: list[_Row]
+    filings: dict[str, _Filing]
+    labels: dict[date, set[tuple[int, str]]]
+
+
+def _context(
+    companyfacts: dict[str, Any], submissions: dict[str, Any], metric: str, as_of: date | None
+) -> _Context:
+    spec = METRICS.get(metric)
+    if spec is None:
+        raise FactError(FactErrorKind.UNSUPPORTED, f"unsupported metric: {metric!r}")
+    rows = _eligible(companyfacts, spec, as_of)
+    filings = _filings(submissions)
+    return _Context(spec, rows, filings, _labels(rows, filings))
+
+
+def _label_fp(wanted: Period) -> str:
+    """The filing fp that names the wanted period; {fy}Q4 ends on the FY{fy} end (R3)."""
+    if wanted.selector == "FY" or wanted.quarter == 4:
+        return "FY"
+    return f"Q{wanted.quarter}"
+
 
 def _own_end(accn: str, fp: str, rows: list[_Row], filings: dict[str, _Filing]) -> date | None:
     """R3: the end of the filing's own period. The submissions report date when the filing is
@@ -265,35 +296,28 @@ def resolve_fact(
     as_of: date | None = None,
 ) -> Fact:
     """Answer metric for period, or raise FactError. as_of is the replay time (R1)."""
-    spec = METRICS.get(metric)
-    if spec is None:
-        raise FactError(FactErrorKind.UNSUPPORTED, f"unsupported metric: {metric!r}")
     wanted = parse_period(period)
-    rows = _eligible(companyfacts, spec, as_of)
-    filings = _filings(submissions)
-    labels = _labels(rows, filings)
+    ctx = _context(companyfacts, submissions, metric, as_of)
 
     if wanted.selector in LATEST:
-        end, label = _latest(wanted.selector, spec, rows, labels)
-    elif wanted.selector == "FY" or wanted.quarter == 4:  # {fy}Q4 ends on the FY{fy} end
-        end, label = _label_end(labels, wanted.fy, "FY"), period
+        end, label = _latest(wanted.selector, ctx.spec, ctx.rows, ctx.labels)
     else:
-        end, label = _label_end(labels, wanted.fy, f"Q{wanted.quarter}"), period
+        end, label = _label_end(ctx.labels, wanted.fy, _label_fp(wanted)), period
 
-    if spec.instant:
-        candidates = [r for r in rows if r.end == end]
+    if ctx.spec.instant:
+        candidates = [r for r in ctx.rows if r.end == end]
     else:
         days = ANNUAL_DAYS if label.startswith("FY") else QUARTER_DAYS
-        candidates = [r for r in rows if r.end == end and r.has_length(days)]
+        candidates = [r for r in ctx.rows if r.end == end and r.has_length(days)]
     if not candidates:
         raise FactError(FactErrorKind.NOT_REPORTED, f"no {metric} fact for {label}")
     if len({r.start for r in candidates}) > 1:
         raise FactError(FactErrorKind.UNRESOLVED_PERIOD, f"several {label} periods end {end}")
 
-    chosen = _choose(candidates, filings)
+    chosen = _choose(candidates, ctx.filings)
     return Fact(
         value=chosen.value,
-        unit=spec.unit,
+        unit=ctx.spec.unit,
         metric=metric,
         concept=chosen.concept,
         period=label,
@@ -303,3 +327,76 @@ def resolve_fact(
         accn=chosen.accn,
         filed=chosen.filed,
     )
+
+# Probes (docs/xbrl-selection.md, "Dependencies"). Each re-applies the rules above to the
+# current records. The "v1" in each name is the version of those rules.
+
+
+def dependencies(
+    cik: int | str, question: str, fact: Fact, *, provenance: bool = False
+) -> list[Dependency]:
+    """What an answer to question (the period as asked) relies on. provenance=True adds
+    provenance.v1, for answers that depend on which filing reported the value."""
+    keys = (companyfacts_key(cik), submissions_key(cik))
+    span = _span(fact.start, fact.end)
+    deps = []
+    if question in LATEST:
+        deps.append(Dependency(keys, f"latest.v1:{fact.metric}:{question}", fact.period))
+    deps.append(Dependency(keys, f"label.v1:{fact.metric}:{fact.period}", fact.end.isoformat()))
+    deps.append(Dependency(keys, f"fact.v1:{fact.metric}:{fact.unit}:{span}", fact.value))
+    if provenance:
+        deps.append(
+            Dependency(
+                keys,
+                f"provenance.v1:{fact.metric}:{fact.unit}:{span}",
+                [fact.accn, fact.filed.isoformat()],
+            )
+        )
+    return deps
+
+
+def evaluate(probe: str, bodies: Sequence[Any], *, as_of: date | None = None) -> Any:
+    """The probe's current value, from the bodies of its dependency's records in order
+    (companyfacts, submissions). A probe the rules can no longer answer gives
+    {"error": kind}, which never equals a value. Raises ValueError for a malformed probe or one
+    this version does not know."""
+    companyfacts, submissions = bodies
+    name, _, rest = probe.partition(":")
+    args = rest.split(":")
+    try:
+        if name == "latest.v1" and len(args) == 2 and args[1] in LATEST:
+            ctx = _context(companyfacts, submissions, args[0], as_of)
+            return _latest(args[1], ctx.spec, ctx.rows, ctx.labels)[1]
+        if name == "label.v1" and len(args) == 2 and args[1] not in LATEST:
+            wanted = parse_period(args[1])
+            ctx = _context(companyfacts, submissions, args[0], as_of)
+            return _label_end(ctx.labels, wanted.fy, _label_fp(wanted)).isoformat()
+        if name in ("fact.v1", "provenance.v1") and len(args) == 3:
+            metric, unit, span = args
+            ctx = _context(companyfacts, submissions, metric, as_of)
+            if unit != ctx.spec.unit:
+                raise ValueError(f"{unit!r} is not the unit of {metric}")
+            row = _fact_at(ctx, *_parse_span(span))
+            return row.value if name == "fact.v1" else [row.accn, row.filed.isoformat()]
+    except FactError as exc:
+        return {"error": exc.kind.value}
+    raise ValueError(f"unknown probe: {probe!r}")
+
+
+def _fact_at(ctx: _Context, start: date | None, end: date) -> _Row:
+    """R4 for one exact period."""
+    candidates = [r for r in ctx.rows if r.start == start and r.end == end]
+    if not candidates:
+        raise FactError(FactErrorKind.NOT_REPORTED, f"no fact for {_span(start, end)}")
+    return _choose(candidates, ctx.filings)
+
+
+def _span(start: date | None, end: date) -> str:
+    return f"@{end.isoformat()}" if start is None else f"{start.isoformat()}..{end.isoformat()}"
+
+
+def _parse_span(span: str) -> tuple[date | None, date]:
+    if span.startswith("@"):
+        return None, date.fromisoformat(span[1:])
+    start, _, end = span.partition("..")
+    return date.fromisoformat(start), date.fromisoformat(end)

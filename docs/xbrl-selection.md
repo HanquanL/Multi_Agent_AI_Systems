@@ -114,24 +114,36 @@ for example, `2024Q3`, so the caller knows which period the value belongs to.
 
 ## Dependencies
 
-The answer records what it relied on, as probes on the records it read (versioned so a rule
-change cannot silently keep old answers):
+The answer records what it relied on, as probes. A probe is evaluated by re-applying these rules
+to the current `companyfacts` and `submissions` records of the company; every probe reads both,
+because labels need report dates (R3) and ties need acceptance times (R4). The `v1` in each name
+is the version of these rules: a rule change gets a new version, so old answers cannot silently
+survive it.
 
-| Record | Probe | Expected value | Changes when |
-|---|---|---|---|
-| `companyfacts` | `fact.v1:{metric}:{start}..{end}` (or `@{end}` for instants) | `(value, accn, filed)` chosen by R4 | the value is restated or a newer filing reports it |
-| `companyfacts` | `label.v1:{period}` | the `(start, end)` the label resolved to | a label resolves differently (rare) |
-| `companyfacts` | `latest.v1:{metric}:{selector}` | the period the selector resolved to (only for `latest_*` questions) | a new period is reported |
-| `submissions` | `reportdate.v1:{accn}` | the report date of the labelling filing | the filing's report date changes (should not happen) |
-| `submissions` | `accepted.v1:{accn}` | the acceptance time, only when R4 used it to break a tie | the filing's acceptance time changes (should not happen) |
+| Probe | Expected value | Changes when |
+|---|---|---|
+| `fact.v1:{metric}:{unit}:{start}..{end}` (or `@{end}` for instants) | the value chosen by R4 | the value is restated or disappears |
+| `label.v1:{metric}:{period}` | the end date the label resolves to | a label resolves differently (rare) |
+| `latest.v1:{metric}:{selector}` | the label the selector resolves to (only for `latest_*` questions) | a new period is reported |
+| `provenance.v1:{metric}:{unit}:{start}..{end}` | `[accn, filed]` of the fact chosen by R4 (optional) | a newer filing reports the value, even unchanged |
 
-The `submissions` record changes with every filing of any type (F3), but the `reportdate` probe
-only looks at one accession, so those changes do not invalidate the answer. This is the
+`fact.v1` compares the value only. Each new 10-K repeats earlier periods as comparatives, so the
+latest-filed fact for a past period moves to a new filing every year with the same value;
+comparing the accession too would invalidate answers that are still right (the over-invalidation
+of C8). The accession and filing date stay in the answer as provenance. An answer that depends on
+which filing reported the value, such as an LLM response naming the latest source filing, adds
+`provenance.v1` explicitly. A probe that can no longer be answered (the fact disappeared, or values
+became ambiguous) returns the error instead of a value, which counts as changed.
+
+The `submissions` record changes with every filing of any type (F3), but these probes only look at
+the facts and filings an answer used, so unrelated filings do not invalidate it. This is the
 fact-aware behaviour the research compares with whole-record versions.
 
 A cached answer is reusable only when every record it is checked against is fresh enough under
-the record layer's policy and every probe returns its expected value. If freshness
-cannot be established, the outcome is unknown, and the caller's `max_age` decides.
+the record layer's policy and every probe returns its expected value. A matching value on stale
+data is no proof of validity. If freshness cannot be established, the outcome is unknown, and the
+caller's `max_age` decides. The evaluation counts value-changing invalidations separately from
+provenance-only changes, to measure how many needless invalidations value-only probes avoid.
 
 ## Worked example (Apple, from the 2026-11-02 data)
 
