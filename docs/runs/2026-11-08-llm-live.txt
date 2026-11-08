@@ -1,0 +1,223 @@
+Live LLM run, 2026-11-08: generate over HTTP with a local Ollama model (F25)
+
+Model: llama3.2:3b, Ollama 0.40.15, Ollama ID a80c4f17acd5, 2.0 GB. Quantization not recorded.
+Commit: 7497b74. Offline suite at that commit: 268 passed.
+
+Server (terminal 1):
+  uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --llm-model llama3.2:3b --llm-db live-llm.db
+Ollama (terminal 3, after the outage below):
+  ollama serve
+Client (terminal 2, Python REPL):
+  uv run python
+
+Code:
+  import asyncio, json, time
+  from mcp import Client
+
+  URL = "http://127.0.0.1:8000/mcp"
+
+  def ask(text, max_tokens=40, **extra):
+      return {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, **extra}
+
+  PLAIN = ask("Name one primary color. Answer with one word.")
+  TOGETHER = ask("Name one planet. Answer with one word.")
+  GROUNDED = ask("What was Apple's FY2024 net income? Use the data given.", max_tokens=60,
+                 context=["320193:NetIncome:FY2024"])
+  CUT = ask("Count from one to one hundred in words.", max_tokens=3)
+
+  async def one(client, label, args):
+      start = time.perf_counter()
+      r = await client.call_tool("generate", args)
+      seconds = time.perf_counter() - start
+      if r.is_error:
+          print(f"{label:<14} ERROR {r.content[0].text}")
+          return
+      a = r.structured_content
+      print(f"{label:<14} {a['source']:<9} {seconds:7.2f}s  {a['finish_reason']:<7} "
+            f"tokens {a['prompt_tokens']}+{a['completion_tokens']}  {a['text'][:60]!r}")
+
+  async def main():
+      async with Client(URL) as client:
+          await one(client, "plain", PLAIN)
+          await one(client, "plain again", PLAIN)
+          await one(client, "other team", {**PLAIN, "workload": "team-b"})
+          await asyncio.gather(*(one(client, f"together {i}", TOGETHER) for i in range(3)))
+          await one(client, "grounded", GROUNDED)
+          await one(client, "grounded again", GROUNDED)
+          await one(client, "cut off", CUT)
+          await one(client, "cut off again", CUT)
+          s = (await client.call_tool("gateway_stats", {})).structured_content
+      print(json.dumps(s["inference"], indent=2))
+      print("SEC requests:", s["upstream_attempts"])
+
+  asyncio.run(main())
+
+
+=== Attempt 0: Ollama was not running ===
+All ten requests failed the same way; stats showed attempts 0, misses 0 and no stored entries.
+
+plain          ERROR Error executing tool generate: source error: network error calling ollama: All connection attempts failed
+
+
+=== Run 1: Ollama started, same server process ===
+plain          upstream     2.29s  stop    tokens 35+2  'Blue'
+plain again    cache        0.00s  stop    tokens 35+2  'Blue'
+other team     upstream     0.04s  stop    tokens 35+2  'Blue'
+together 0     upstream     0.06s  stop    tokens 34+3  'Mars'
+together 1     merged       0.06s  stop    tokens 34+3  'Mars'
+together 2     merged       0.06s  stop    tokens 34+3  'Mars'
+grounded       upstream     0.93s  length  tokens 88+60  "The data provided is for CIK 0000320193, which is Apple's CI"
+grounded again upstream     0.41s  length  tokens 88+60  "The data provided is for CIK 0000320193, which is Apple's CI"
+cut off        upstream     0.06s  length  tokens 34+3  "Here's counting"
+cut off again  upstream     0.04s  length  tokens 34+3  "Here's counting"
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "attempts": 7,
+  "cache": {
+    "entries": 3,
+    "used_bytes": 386,
+    "evictions": 0
+  },
+  "store": {
+    "entries": 3,
+    "used_bytes": 386,
+    "occupancy": 0.0,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "changed_probes": {},
+  "workloads": {
+    "default": {
+      "cache_hits": 1,
+      "store_hits": 0,
+      "merged": 2,
+      "misses": 9,
+      "calls": 7,
+      "prompt_tokens_spent": 348,
+      "completion_tokens_spent": 133,
+      "prompt_tokens_avoided": 103,
+      "completion_tokens_avoided": 8,
+      "generation_seconds_spent": 3.0142998000010266,
+      "generation_seconds_avoided": 2.108137999999599,
+      "overhead_seconds": 0.7840097999942373,
+      "invalidated": 0,
+      "estimated_usd_spent": null,
+      "estimated_usd_avoided": null
+    }
+  }
+}
+SEC requests: 2
+
+
+=== Run 2: GROUNDED changed to max_tokens=300, printed text widened to 300 characters ===
+plain          cache        0.01s  stop    tokens 35+2  'Blue'
+plain again    cache        0.00s  stop    tokens 35+2  'Blue'
+other team     cache        0.00s  stop    tokens 35+2  'Blue'
+together 0     cache        0.00s  stop    tokens 34+3  'Mars'
+together 1     cache        0.00s  stop    tokens 34+3  'Mars'
+together 2     cache        0.01s  stop    tokens 34+3  'Mars'
+grounded       upstream     0.79s  stop    tokens 88+77  "The data provided is for CIK 0000320193, which is Apple's CIK number. However, the data is for FY2024 (2023-10-01 to 2024-09-28) and not for Apple specifically.\n\nThe value given is $93,736,000,000 USD, which is Apple's FY2024 net income."
+grounded again cache        0.01s  stop    tokens 88+77  "The data provided is for CIK 0000320193, which is Apple's CIK number. However, the data is for FY2024 (2023-10-01 to 2024-09-28) and not for Apple specifically.\n\nThe value given is $93,736,000,000 USD, which is Apple's FY2024 net income."
+cut off        upstream     0.05s  length  tokens 34+3  "Here's counting"
+cut off again  upstream     0.04s  length  tokens 34+3  "Here's counting"
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "attempts": 10,
+  "cache": {
+    "entries": 4,
+    "used_bytes": 1044,
+    "evictions": 0
+  },
+  "store": {
+    "entries": 4,
+    "used_bytes": 1044,
+    "occupancy": 0.0,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "changed_probes": {},
+  "workloads": {
+    "default": {
+      "cache_hits": 8,
+      "store_hits": 0,
+      "merged": 2,
+      "misses": 12,
+      "calls": 10,
+      "prompt_tokens_spent": 504,
+      "completion_tokens_spent": 216,
+      "prompt_tokens_avoided": 398,
+      "completion_tokens_avoided": 100,
+      "generation_seconds_spent": 3.8785285000049043,
+      "generation_seconds_avoided": 7.08771109999725,
+      "overhead_seconds": 0.7899806999957946,
+      "invalidated": 0,
+      "estimated_usd_spent": null,
+      "estimated_usd_avoided": null
+    }
+  }
+}
+SEC requests: 2
+
+
+=== Run 3: gateway server restarted with the same database; Ollama left running ===
+plain          store        0.29s  stop    tokens 35+2  'Blue'
+plain again    cache        0.00s  stop    tokens 35+2  'Blue'
+other team     store        0.00s  stop    tokens 35+2  'Blue'
+together 0     store        0.00s  stop    tokens 34+3  'Mars'
+together 1     cache        0.00s  stop    tokens 34+3  'Mars'
+together 2     cache        0.00s  stop    tokens 34+3  'Mars'
+grounded       store        0.59s  stop    tokens 88+77  "The data provided is for CIK 0000320193, which is Apple's CIK number. However, the data is for FY2024 (2023-10-01 to 2024-09-28) and not for Apple specifically.\n\nThe value given is $93,736,000,000 USD, which is Apple's FY2024 net income."
+grounded again cache        0.00s  stop    tokens 88+77  "The data provided is for CIK 0000320193, which is Apple's CIK number. However, the data is for FY2024 (2023-10-01 to 2024-09-28) and not for Apple specifically.\n\nThe value given is $93,736,000,000 USD, which is Apple's FY2024 net income."
+cut off        upstream     0.33s  length  tokens 34+3  "Here's counting"
+cut off again  upstream     0.04s  length  tokens 34+3  "Here's counting"
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "attempts": 2,
+  "cache": {
+    "entries": 4,
+    "used_bytes": 1044,
+    "evictions": 0
+  },
+  "store": {
+    "entries": 4,
+    "used_bytes": 1044,
+    "occupancy": 0.0,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "changed_probes": {},
+  "workloads": {
+    "default": {
+      "cache_hits": 8,
+      "store_hits": 4,
+      "merged": 0,
+      "misses": 2,
+      "calls": 2,
+      "prompt_tokens_spent": 68,
+      "completion_tokens_spent": 6,
+      "prompt_tokens_avoided": 383,
+      "completion_tokens_avoided": 169,
+      "generation_seconds_spent": 0.36527339999884134,
+      "generation_seconds_avoided": 5.760378499999206,
+      "overhead_seconds": 0.8746719000046141,
+      "invalidated": 0,
+      "estimated_usd_spent": null,
+      "estimated_usd_avoided": null
+    }
+  }
+}
+SEC requests: 2
+
+
+=== ollama list ===
+NAME           ID              SIZE      MODIFIED
+llama3.2:3b    a80c4f17acd5    2.0 GB    About an hour ago

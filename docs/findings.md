@@ -307,3 +307,35 @@ $29,789,000,000, total assets 2026Q4 $404,548,000,000) have not been checked aga
 Refused questions are counted as `miss`, so 13 misses include 2 refusals; 11 answers were stored.
 Offline: 171 tests.
 Raw output: [runs/2026-11-08-get-fact-live.txt](runs/2026-11-08-get-fact-live.txt)
+
+## F25. The LLM path works live: repeats, merged requests and grounded answers avoid model calls
+*2026-11-08 · verified (live, local model, one short session)*
+
+Requests went through the `generate` MCP tool to `llama3.2:3b` on Ollama 0.40.15 (ID
+`a80c4f17acd5`). In the first complete run, 10 requests made 7 model calls: one exact repeat came
+from the cache and two of three identical concurrent requests merged. The same prompt from a
+different workload generated its own answer, so responses stayed private. All token counters
+matched a hand calculation in each run (run 1: 348 + 133 spent, 103 + 8 avoided).
+
+A grounded request for Apple's FY2024 net income returned the correct value, $93,736,000,000. Its
+repeat came from the cache in 0.01 s after the dependency check passed, with no additional SEC
+request. Responses cut off by `max_tokens` (`finish_reason` `length`) were regenerated every time;
+this included a grounded request first sent with too small a limit.
+
+After the gateway restarted on the same SQLite file, 10 requests made 2 model calls, both for the
+cut-off prompt that is never stored; 4 came from the store and 4 from memory. Rechecking the grounded
+answer cost 2 SEC requests, because this server kept data records in memory only (no `--db`).
+
+With Ollama stopped, all ten requests returned a readable `source error` and nothing was stored.
+
+Limits: one model, one machine, a handful of prompts. No fact changed, so live invalidation was not
+observed (`changed_probes` is empty; offline tests cover it). The restart came minutes after
+storage, so this is not the 24-hour acceptance run. Model generation took about 0.04-0.9 s once
+loaded, so time saved on short local answers is small. The first call's 2.29 s included model load
+and is counted in `generation_seconds_spent` and in every later `generation_seconds_avoided` for
+that answer, so those totals are inflated and should not be quoted. Dollar estimates are `null`
+because a local model has no provider price. The answer's value was right, but it also said the
+data was "not for Apple specifically", because the prompt identifies the company only by CIK;
+generated text remains unverified. Quantization was not recorded.
+Offline: 268 tests.
+Raw output: [runs/2026-11-08-llm-live.txt](runs/2026-11-08-llm-live.txt)
