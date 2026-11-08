@@ -4,7 +4,7 @@ import json
 from dataclasses import replace
 
 import pytest
-from fakes import FakeClock, FakeConnector
+from fakes import FakeClock, FakeConnector, FakeProvider
 from mcp import Client
 from test_edgar_facts import (
     APPLE_FACTS,
@@ -18,15 +18,79 @@ from multi_agent_ai_systems.answers import Outcome
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.connectors.edgar import companyfacts_key, submissions_key
 from multi_agent_ai_systems.connectors.edgar_facts import FactError
-from multi_agent_ai_systems.connectors.edgar_service import FactService, register_tools
+from multi_agent_ai_systems.connectors.edgar_service import (
+    FactContext,
+    FactService,
+    register_tools,
+)
 from multi_agent_ai_systems.gateway import Gateway
+from multi_agent_ai_systems.inference import ContextError, InferenceGateway
+from multi_agent_ai_systems.llm import GenerationRequest, Message
 from multi_agent_ai_systems.server import build_server
 from multi_agent_ai_systems.validity import TTLPolicy
 
 HOUR = 3600.0
 FACTS, SUBMISSIONS = companyfacts_key("320193"), submissions_key("320193")
+QUESTION = GenerationRequest((Message("user", "How did Apple do?"),), max_tokens=50)
+SPEC = ("320193:NetIncome:FY2024",)
+
+def llm_for(service, clock):
+    provider = FakeProvider()
+    gateway = InferenceGateway(
+        provider,
+        cache=RecordCache(1_000_000),
+        policy=TTLPolicy(168 * HOUR),
+        context_source=FactContext(service),
+        clock=clock,
+    )
+    return gateway, provider
 
 
+async def test_llm_answer_is_grounded_in_the_resolved_fact(setup):
+    _, clock, service = setup
+    llm, provider = llm_for(service, clock)
+    await llm.generate(QUESTION, context=SPEC)
+    system = provider.requests[0].messages[0].content
+    assert "93736000000 USD" in system
+    assert "2023-10-01 to 2024-09-28" in system
+    assert "0000320193" in system and "-25-000079" not in system  # no filing is named
+
+
+async def test_restatement_regenerates_the_llm_answer(setup):
+    conn, clock, service = setup
+    llm, provider = llm_for(service, clock)
+    await llm.generate(QUESTION, context=SPEC)
+    amended = "2023-10-01 2024-09-28 2024 FY 10-K/A 2025-12-01 0000320193-25-000999 93000000000"
+    conn.data[FACTS] = net_income(APPLE_NET_INCOME + amended)
+    clock.advance(HOUR + 1)
+    assert (await llm.generate(QUESTION, context=SPEC)).source == "upstream"
+    assert "93000000000 USD" in provider.requests[1].messages[0].content
+    assert llm.stats.changed_probes["fact.v1"] == 1
+
+
+async def test_unchanged_comparative_keeps_the_llm_answer(setup):
+    conn, clock, service = setup
+    day1 = "\n".join(line for line in APPLE_NET_INCOME.split("\n") if "25-000079" not in line)
+    conn.data[FACTS] = net_income(day1)
+    llm, provider = llm_for(service, clock)
+    await llm.generate(QUESTION, context=SPEC)
+    conn.data[FACTS] = APPLE_FACTS  # the 2025 10-K repeats FY2024 with the same value
+    clock.advance(HOUR + 1)
+    assert (await llm.generate(QUESTION, context=SPEC)).source == "cache"
+    assert provider.calls == 1
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["320193:NetIncome:2024Q5", "320193:NetIncome", "320193:NetIncome:2024Q4"],
+)
+async def test_unanswerable_fact_makes_no_llm_call(setup, spec):
+    _, clock, service = setup
+    llm, provider = llm_for(service, clock)
+    with pytest.raises(ContextError):
+        await llm.generate(QUESTION, context=(spec,))
+    assert provider.calls == 0
+    
 class JsonConnector(FakeConnector):
     """Serves JSON bodies, as the EDGAR connector does for companyfacts and submissions."""
 

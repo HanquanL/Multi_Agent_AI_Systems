@@ -9,7 +9,7 @@ plugin that made it. Reuse needs every probe to return its expected value.
 import json
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
@@ -17,7 +17,11 @@ from typing import Any
 from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.connectors.base import Record, SourceError
-from multi_agent_ai_systems.dependencies import Dependency
+from multi_agent_ai_systems.dependencies import (
+    Dependency,
+    dependency_from_json,
+    dependency_to_json,
+)
 from multi_agent_ai_systems.gateway import Gateway
 
 # (probe, bodies of the dependency's records in order) -> the probe's current value.
@@ -39,6 +43,50 @@ class Lookup:
     changed: tuple[str, ...] = ()  # the probes that no longer match, for CHANGED
 
 
+@dataclass(frozen=True)
+class Check:
+    outcome: Outcome  # MATCH, CHANGED or UNKNOWN
+    changed: tuple[str, ...] = ()  # the probes that no longer match
+    permanent: bool = False  # UNKNOWN that can never be resolved: the probe is not known
+
+
+class DependencyChecker:
+    """Checks dependencies against records read through the gateway, so they are as fresh as
+    the record layer's policy and the caller's max_age require."""
+
+    def __init__(self, gateway: Gateway, evaluate: Evaluator):
+        self._gateway = gateway
+        self._evaluate = evaluate
+
+    async def check(
+        self,
+        dependencies: Sequence[Dependency],
+        *,
+        max_age: float | None = None,
+        workload: str = DEFAULT_WORKLOAD,
+        agent: str = "anonymous",
+    ) -> Check:
+        bodies: dict[str, Any] = {}  # each record is read once per check
+        changed = []
+        for dep in dependencies:
+            try:
+                for k in dep.keys:
+                    if k not in bodies:
+                        response = await self._gateway.get(
+                            k, max_age=max_age, workload=workload, agent=agent
+                        )
+                        bodies[k] = response.data
+                current = self._evaluate(dep.probe, [bodies[k] for k in dep.keys])
+            except SourceError:
+                return Check(Outcome.UNKNOWN)  # may work later
+            except ValueError:
+                return Check(Outcome.UNKNOWN, permanent=True)
+            if current != dep.expected:
+                changed.append(dep.probe)
+        if changed:
+            return Check(Outcome.CHANGED, changed=tuple(changed))
+        return Check(Outcome.MATCH)
+    
 @dataclass
 class AnswerStats:
     outcomes: Counter[Outcome] = field(default_factory=Counter)
@@ -49,8 +97,7 @@ class AnswerCache:
     """Answers keyed by question, kept in a byte-bounded RecordCache like source records."""
 
     def __init__(self, gateway: Gateway, evaluate: Evaluator, cache: RecordCache):
-        self._gateway = gateway
-        self._evaluate = evaluate
+        self.checker = DependencyChecker(gateway, evaluate)
         self._cache = cache
         self.stats = AnswerStats()
 
@@ -59,7 +106,9 @@ class AnswerCache:
 
     def put(self, key: str, answer: Any, dependencies: Sequence[Dependency]) -> bool:
         """Store a copy of answer. It must be JSON-compatible. Returns False if too large."""
-        body = json.dumps({"answer": answer, "dependencies": [asdict(d) for d in dependencies]})
+        body = json.dumps(
+            {"answer": answer, "dependencies": [dependency_to_json(d) for d in dependencies]}
+        )
         record = Record(
             key=key,
             data=json.loads(body),  # a copy, exactly as it would come back from disk
@@ -82,30 +131,21 @@ class AnswerCache:
         record = self._cache.get(key)
         if record is None:
             return self._count(Lookup(Outcome.MISS))
-        bodies: dict[str, Any] = {}  # each record is read once per check
-        changed = []
-        for item in record.data["dependencies"]:
-            dep = Dependency(tuple(item["keys"]), item["probe"], item["expected"])
-            try:
-                for k in dep.keys:
-                    if k not in bodies:
-                        response = await self._gateway.get(
-                            k, max_age=max_age, workload=workload, agent=agent
-                        )
-                        bodies[k] = response.data
-                current = self._evaluate(dep.probe, [bodies[k] for k in dep.keys])
-            except SourceError:
-                return self._count(Lookup(Outcome.UNKNOWN))  # may work later: keep the answer
-            except ValueError:
-                self._cache.remove(key)  # a probe that can never be checked
-                return self._count(Lookup(Outcome.UNKNOWN))
-            if current != dep.expected:
-                changed.append(dep.probe)
-        if changed:
+        check = await self.checker.check(
+            [dependency_from_json(item) for item in record.data["dependencies"]],
+            max_age=max_age,
+            workload=workload,
+            agent=agent,
+        )
+        if check.outcome is Outcome.UNKNOWN:
+            if check.permanent:
+                self._cache.remove(key)
+            return self._count(Lookup(Outcome.UNKNOWN))
+        if check.outcome is Outcome.CHANGED:
             self._cache.remove(key)
-            for probe in changed:
+            for probe in check.changed:
                 self.stats.changed_probes[probe.partition(":")[0]] += 1
-            return self._count(Lookup(Outcome.CHANGED, changed=tuple(changed)))
+            return self._count(Lookup(Outcome.CHANGED, changed=check.changed))
         return self._count(Lookup(Outcome.MATCH, record.data["answer"]))
 
     def _count(self, lookup: Lookup) -> Lookup:

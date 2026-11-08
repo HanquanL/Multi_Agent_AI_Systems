@@ -31,6 +31,7 @@ class GenerationRequest:
     seed: int | None = None
     stop: tuple[str, ...] = ()
     allow_reuse: bool = False  # the caller accepts a shared answer despite temperature > 0
+    no_store: bool = False  # never cache or merge this request
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -46,7 +47,7 @@ class GenerationRequest:
     def reusable(self) -> bool:
         """May this request be cached or merged? Otherwise callers would silently share one
         random sample."""
-        return self.temperature == 0 or self.allow_reuse
+        return not self.no_store and (self.temperature == 0 or self.allow_reuse)
 
 
 @dataclass(frozen=True)

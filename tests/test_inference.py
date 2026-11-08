@@ -6,11 +6,8 @@ import pytest
 from fakes import FakeClock, FakeProvider
 
 from multi_agent_ai_systems.cache import RecordCache
-from multi_agent_ai_systems.connectors.base import SourceError, ThrottledError
-from multi_agent_ai_systems.inference import InferenceGateway
-from multi_agent_ai_systems.llm import GenerationRequest, Message, ModelPrice
-from multi_agent_ai_systems.validity import TTLPolicy
 from multi_agent_ai_systems.connectors.base import RateLimit, SourceError, ThrottledError
+from multi_agent_ai_systems.inference import InferenceGateway
 from multi_agent_ai_systems.llm import (
     GenerationRequest,
     Message,
@@ -18,6 +15,7 @@ from multi_agent_ai_systems.llm import (
     ProviderLimits,
     estimate_tokens,
 )
+from multi_agent_ai_systems.validity import TTLPolicy
 
 DAY = 86_400.0
 HELLO = (Message("user", "hello"),)

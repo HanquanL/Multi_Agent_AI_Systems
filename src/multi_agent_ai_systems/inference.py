@@ -6,11 +6,14 @@ private to the workload that asked. Generated text is unverified, whoever reuses
 """
 
 import json
-from dataclasses import dataclass, field
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from multi_agent_ai_systems.allocation import DEFAULT_WORKLOAD, AllocationPolicy
+from multi_agent_ai_systems.answers import DependencyChecker, Outcome
 from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.clock import Clock, RealClock
 from multi_agent_ai_systems.connectors.base import (
@@ -19,10 +22,16 @@ from multi_agent_ai_systems.connectors.base import (
     SourceError,
     ThrottledError,
 )
+from multi_agent_ai_systems.dependencies import (
+    Dependency,
+    dependency_from_json,
+    dependency_to_json,
+)
 from multi_agent_ai_systems.llm import (
     Completion,
     GenerationRequest,
     InferenceProvider,
+    Message,
     estimate_tokens,
     request_key,
 )
@@ -45,6 +54,35 @@ class Generation:
     answer_kind: str = "generated"  # unverified, unlike an answer computed from source data
 
 
+class ContextError(Exception):
+    """A context specification is invalid or could not be resolved. No LLM call was made."""
+
+
+@dataclass(frozen=True)
+class Grounding:
+    text: str  # added to the prompt as a system message
+    dependencies: tuple[Dependency, ...]  # what that text relied on
+
+
+class ContextSource(Protocol):
+    """A plugin that resolves context specifications into prompt text the gateway can check
+    later. Raises ContextError for specifications it cannot answer."""
+
+    checker: DependencyChecker
+
+    def normalize(self, spec: str) -> str:
+        """The canonical form of spec, without fetching anything."""
+        ...
+
+    async def ground(
+        self,
+        specs: Sequence[str],
+        *,
+        max_age: float | None = None,
+        workload: str = DEFAULT_WORKLOAD,
+        agent: str = "anonymous",
+    ) -> Grounding: ...
+
 @dataclass
 class InferenceCounts:
     cache_hits: int = 0
@@ -59,11 +97,13 @@ class InferenceCounts:
     generation_seconds_spent: float = 0.0
     generation_seconds_avoided: float = 0.0
     overhead_seconds: float = 0.0  # delay the gateway added: lookups, queueing, backoff
+    invalidated: int = 0  # stored responses dropped because a dependency changed
 
 
 @dataclass
 class InferenceStats:
     by_workload: dict[str, InferenceCounts] = field(default_factory=dict)  # per quota bucket
+    changed_probes: Counter[str] = field(default_factory=Counter)  # by probe name
 
     def workload(self, bucket: str) -> InferenceCounts:
         return self.by_workload.setdefault(bucket, InferenceCounts())
@@ -89,6 +129,7 @@ class InferenceGateway:
         allocation: AllocationPolicy | None = None,
         store: SQLiteRecordStore | None = None,
         clock: Clock | None = None,
+        context_source: ContextSource | None = None,
     ):
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -115,23 +156,31 @@ class InferenceGateway:
         self._stored_at: dict[str, float] = {}  # gateway-clock time each response was stored
         self.attempts = 0
         self.stats = InferenceStats()
+        self.context_source = context_source
 
     async def generate(
         self,
         request: GenerationRequest,
         *,
+        context: Sequence[str] = (),
         max_age: float | None = None,
+        data_max_age: float | None = None,
         workload: str = DEFAULT_WORKLOAD,
         agent: str = "anonymous",
     ) -> Generation:
-        """workload decides who may reuse this response and whose share of the provider's
-        limits a call uses. Cache hits and joining a call in flight use none."""
+        """context lists specifications the context source resolves and adds to the prompt;
+        the response is reused only while what they resolved to still holds. max_age limits
+        the stored response's age, data_max_age the age of the records it is checked against.
+        workload decides who may reuse this response and whose share of the limits a call
+        uses. Cache hits and joining a call in flight use no provider limits."""
         start = self._clock.now()
         counts = self._counts(workload)
+        specs = self._normalize(context)
         version = await self.provider.model_version()
 
         if not request.reusable:
-            completion, seconds = await self._call(request, workload, agent)
+            grounded, _ = await self._ground(request, specs, data_max_age, workload, agent)
+            completion, seconds = await self._call(grounded, workload, agent)
             data = _data(completion, seconds)
             _spend(counts, data)
             self._add_overhead(counts, start, seconds)
@@ -143,9 +192,12 @@ class InferenceGateway:
             provider=self.provider.name,
             model=self.provider.model,
             model_version=version,
+            context=specs,  # the specifications, not their values
         )
         found = self._find(key, max_age)
-        if found is not None:
+        if found is not None and await self._still_valid(
+            key, found[0], counts, data_max_age, workload, agent
+        ):
             record, age, source = found
             counts.cache_hits += 1
             if source == "store":
@@ -156,7 +208,9 @@ class InferenceGateway:
 
         counts.misses += 1
         ticket = _Ticket()
-        record = await self._merger.get(key, ticket, request, workload, agent, version)
+        record = await self._merger.get(
+            key, ticket, request, specs, data_max_age, workload, agent, version
+        )
         if ticket.started:
             self._add_overhead(counts, start, record.data["generation_seconds"])
             return self._generation(record.data, version, "upstream", 0.0)
@@ -175,15 +229,22 @@ class InferenceGateway:
         key: str,
         ticket: _Ticket,
         request: GenerationRequest,
+        specs: tuple[str, ...],
+        data_max_age: float | None,
         workload: str,
         agent: str,
         version: str,
     ) -> Record:
         """Runs once per merged generation, charged to the workload that started it."""
         ticket.started = True
-        completion, seconds = await self._call(request, workload, agent)
+        grounded, dependencies = await self._ground(
+            request, specs, data_max_age, workload, agent
+        )
+        completion, seconds = await self._call(grounded, workload, agent)
         data = _data(completion, seconds)
         _spend(self._counts(workload), data)
+        if dependencies:
+            data["dependencies"] = [dependency_to_json(d) for d in dependencies]
         record = Record(
             key=key,
             data=data,
@@ -199,6 +260,61 @@ class InferenceGateway:
                 self._stored_at[key] = self._clock.now()
         return record
 
+    def _normalize(self, context: Sequence[str]) -> tuple[str, ...]:
+        if not context:
+            return ()
+        if self.context_source is None:
+            raise ValueError("this gateway has no context source")
+        return tuple(self.context_source.normalize(spec) for spec in context)
+
+    async def _ground(
+        self,
+        request: GenerationRequest,
+        specs: tuple[str, ...],
+        data_max_age: float | None,
+        workload: str,
+        agent: str,
+    ) -> tuple[GenerationRequest, tuple[Dependency, ...]]:
+        """Add what the specifications resolve to as a system message, first in the prompt."""
+        if not specs:
+            return request, ()
+        grounding = await self.context_source.ground(
+            specs, max_age=data_max_age, workload=workload, agent=agent
+        )
+        messages = (Message("system", grounding.text), *request.messages)
+        return replace(request, messages=messages), grounding.dependencies
+
+    async def _still_valid(
+        self,
+        key: str,
+        record: Record,
+        counts: InferenceCounts,
+        data_max_age: float | None,
+        workload: str,
+        agent: str,
+    ) -> bool:
+        """A response with dependencies is reused only if every probe still matches."""
+        items = record.data.get("dependencies")
+        if not items:
+            return True
+        check = await self.context_source.checker.check(
+            [dependency_from_json(item) for item in items],
+            max_age=data_max_age,
+            workload=workload,
+            agent=agent,
+        )
+        if check.outcome is Outcome.MATCH:
+            return True
+        if check.outcome is Outcome.CHANGED:
+            counts.invalidated += 1
+            for probe in check.changed:
+                self.stats.changed_probes[probe.partition(":")[0]] += 1
+        if check.outcome is Outcome.CHANGED or check.permanent:
+            self.cache.remove(key)
+            if self.store is not None:
+                self.store.remove(key)
+        return False
+    
     def _find(self, key: str, max_age: float | None) -> tuple[Record, float, str] | None:
         """A stored response that may still be served: (record, age, where it was)."""
         record = self.cache.get(key)

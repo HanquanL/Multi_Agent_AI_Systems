@@ -96,11 +96,13 @@ class FakeProvider(InferenceProvider):
         self.gate: asyncio.Event | None = None
         self.failures: list[Exception] = []
         self.finish_reason = "stop"
+        self.requests: list[GenerationRequest] = []
 
     async def model_version(self) -> str:
         return self.version
 
     async def generate(self, request: GenerationRequest) -> Completion:
+        self.requests.append(request)
         self.calls += 1
         if self.gate is not None:
             await self.gate.wait()

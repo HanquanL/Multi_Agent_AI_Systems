@@ -6,6 +6,7 @@ answers.py. Facts are computed by code from public filings, so answers are share
 workloads; the records behind them are fetched and charged like any other request.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,7 +32,9 @@ from multi_agent_ai_systems.connectors.edgar_facts import (
     parse_period,
     resolve_fact,
 )
+from multi_agent_ai_systems.dependencies import Dependency
 from multi_agent_ai_systems.gateway import Gateway
+from multi_agent_ai_systems.inference import ContextError, Grounding
 
 
 @dataclass(frozen=True)
@@ -59,24 +62,44 @@ class FactService:
         """Raises ValueError for a bad CIK and FactError when the rules give no answer. An
         invalid question fails before anything is fetched. provenance=True also invalidates
         the answer when a newer filing reports the same value."""
-        cik = normalize_cik(cik)
-        if metric not in METRICS:
-            raise FactError(FactErrorKind.UNSUPPORTED, f"unsupported metric: {metric!r}")
-        parse_period(period)
+        cik = validate_question(cik, metric, period)
         key = f"get_fact/{cik}/{metric}/{period}" + ("/provenance" if provenance else "")
 
         lookup = await self.answers.get(key, max_age=max_age, workload=workload, agent=agent)
         if lookup.outcome is Outcome.MATCH:
             return FactResult(lookup.answer, lookup.outcome)
 
+        fact, deps = await self.compute(
+            cik,
+            metric,
+            period,
+            provenance=provenance,
+            max_age=max_age,
+            workload=workload,
+            agent=agent,
+        )
+        answer = fact_payload(fact)
+        self.answers.put(key, answer, deps)
+        return FactResult(answer, lookup.outcome)
+
+    async def compute(
+        self,
+        cik: str,
+        metric: str,
+        period: str,
+        *,
+        provenance: bool = False,
+        max_age: float | None = None,
+        workload: str = DEFAULT_WORKLOAD,
+        agent: str = "anonymous",
+    ) -> tuple[Fact, list[Dependency]]:
+        """Resolve a validated question on records read through the gateway."""
         bodies = [
             (await self.gateway.get(k, max_age=max_age, workload=workload, agent=agent)).data
             for k in (companyfacts_key(cik), submissions_key(cik))
         ]
         fact = resolve_fact(*bodies, metric, period)
-        answer = fact_payload(fact)
-        self.answers.put(key, answer, dependencies(cik, period, fact, provenance=provenance))
-        return FactResult(answer, lookup.outcome)
+        return fact, dependencies(cik, period, fact, provenance=provenance)
 
 
 def fact_payload(fact: Fact) -> dict[str, Any]:
@@ -93,6 +116,64 @@ def fact_payload(fact: Fact) -> dict[str, Any]:
         "filed": fact.filed.isoformat(),
         "answer_kind": fact.answer_kind,
     }
+
+def validate_question(cik: int | str, metric: str, period: str) -> str:
+    """The normalized CIK. Raises ValueError or FactError without fetching anything."""
+    normalized = normalize_cik(cik)
+    if metric not in METRICS:
+        raise FactError(FactErrorKind.UNSUPPORTED, f"unsupported metric: {metric!r}")
+    parse_period(period)
+    return normalized
+
+
+class FactContext:
+    """Grounds LLM prompts in reported facts. A specification is "CIK:metric:period".
+
+    The prompt gives values and periods but not filings, so a response cannot name a source
+    and value-only dependencies are enough.
+    """
+
+    def __init__(self, service: FactService):
+        self.service = service
+        self.checker = service.answers.checker
+
+    def normalize(self, spec: str) -> str:
+        parts = spec.split(":")
+        if len(parts) != 3:
+            raise ContextError(f"expected CIK:metric:period, got {spec!r}")
+        cik, metric, period = parts
+        try:
+            return f"{validate_question(cik, metric, period)}:{metric}:{period}"
+        except (ValueError, FactError) as exc:
+            raise ContextError(f"{spec}: {exc}") from exc
+
+    async def ground(
+        self,
+        specs: Sequence[str],
+        *,
+        max_age: float | None = None,
+        workload: str = DEFAULT_WORKLOAD,
+        agent: str = "anonymous",
+    ) -> Grounding:
+        lines = []
+        found: list[Dependency] = []
+        for spec in specs:
+            cik, metric, period = spec.split(":")
+            try:
+                fact, deps = await self.service.compute(
+                    cik, metric, period, max_age=max_age, workload=workload, agent=agent
+                )
+            except FactError as exc:
+                raise ContextError(f"{spec}: {exc.kind.value}: {exc}") from exc
+            lines.append(_fact_line(cik, fact))
+            found.extend(deps)
+        text = "Figures reported in SEC filings. Use these values exactly:\n" + "\n".join(lines)
+        return Grounding(text, tuple(found))
+
+
+def _fact_line(cik: str, fact: Fact) -> str:
+    dates = f"{fact.start} to {fact.end}" if fact.start else f"at {fact.end}"
+    return f"CIK {cik}: {fact.metric}, {fact.period} ({dates}): {fact.value} {fact.unit}"
 
 def register_tools(server: MCPServer, service: FactService) -> None:
     @server.tool()
