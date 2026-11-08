@@ -277,3 +277,33 @@ findings motivate explicit period-resolution rules, source provenance on every a
 conservative handling of ambiguous or unavailable facts; see [xbrl-selection.md](xbrl-selection.md).
 Raw output: [runs/2026-11-02-companyfacts-netincome.txt](runs/2026-11-02-companyfacts-netincome.txt),
 [runs/2026-11-02-companyfacts-metrics.txt](runs/2026-11-02-companyfacts-metrics.txt)
+
+## F24. `get_fact` works on a company's full history, and a new filing moved provenance but not values
+*2026-11-08 · verified (live, Apple only, one run)*
+
+Fourteen `get_fact` questions over HTTP against a freshly started gateway cost 2 requests to SEC
+(`companyfacts` and `submissions`, once each). Repeating `NetIncome FY2024` returned `miss`, then
+`match`. This was the resolver's first run on all of Apple's facts rather than rows filtered to
+2024; no question gave an "unresolved period" or "ambiguous value" error.
+
+Every value checked on 2026-11-02 came back unchanged: net income FY2024 $93,736,000,000 and fiscal
+Q2 2024 $23,636,000,000, revenue FY2024 $391,035,000,000, operating income FY2024
+$123,216,000,000, diluted EPS Q2 2024 $1.53, total assets FY2024 $364,980,000,000, cash FY2024
+$29,943,000,000. Fiscal Q4 of a duration metric was refused as "not reported" (2024Q4, and
+`latest_quarter` right after the 10-K as 2026Q4), never replaced by Q3; for total assets, 2024Q4
+and `latest_quarter` returned the year-end balance.
+
+Apple filed its FY2026 10-K (`0000320193-26-000026`) on 2026-11-03, the day after the F23 runs. Net
+income, revenue and operating income for FY2024 now resolve to that filing instead of
+`0000320193-25-000079`, with the same values. This is the unchanged-comparative case: a
+dependency comparing `(value, accn, filed)` would have invalidated answers cached before that
+filing, while the value-only `fact.v1` keeps them. Total assets and cash for FY2024 stayed on
+`0000320193-25-000079`.
+
+Limits: one company and one run. The data did not change between asks, so no invalidation occurred
+(`changed_probes` is empty); the comparison above is between this run and the 2026-11-02 runs. The
+three values first seen here (net income FY2026 $132,175,000,000, net income 2026Q3
+$29,789,000,000, total assets 2026Q4 $404,548,000,000) have not been checked against the filings.
+Refused questions are counted as `miss`, so 13 misses include 2 refusals; 11 answers were stored.
+Offline: 171 tests.
+Raw output: [runs/2026-11-08-get-fact-live.txt](runs/2026-11-08-get-fact-live.txt)
