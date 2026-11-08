@@ -65,6 +65,9 @@ not listed there: the latest `end` date among that filing's facts, accepted only
 a fact of the matching length ending on that date (annual for `fp = FY`, quarter for `Q1..Q3`);
 otherwise the result is an "unresolved period" error.
 - `fp = FY` gives `FY{fy}`; `fp = Q1..Q3` gives `{fy}Q{n}`.
+- `{fy}Q4` is the quarter ending on the `FY{fy}` end date. No filing labels it directly, since
+  fiscal Q4 is reported inside the 10-K. A duration metric then needs a quarter-length fact
+  ending on that date (otherwise "not reported", R6); an instant metric gives the year-end balance.
 - An instant fact takes the label of the filing whose own period ends on its date: the year-end
   balance for `FY{fy}`, the quarter-end balance for `{fy}Q{n}`.
 - If no filing labels the period, or two filings label it differently, the result is an
