@@ -62,6 +62,18 @@ class ProviderLimits:
     requests: RateLimit
     tokens: RateLimit | None = None  # tokens per period; None if the provider sets no such limit
 
+@dataclass(frozen=True)
+class ModelPrice:
+    """Published prices, USD per million tokens. Gives an estimate, never a bill."""
+
+    input_per_million: float
+    output_per_million: float
+
+    def usd(self, prompt_tokens: int, completion_tokens: int) -> float:
+        return (
+            prompt_tokens * self.input_per_million
+            + completion_tokens * self.output_per_million
+        ) / 1_000_000
 
 class InferenceProvider(ABC):
     """One model behind one API."""

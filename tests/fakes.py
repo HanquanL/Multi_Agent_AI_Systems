@@ -95,6 +95,7 @@ class FakeProvider(InferenceProvider):
         self.calls = 0
         self.gate: asyncio.Event | None = None
         self.failures: list[Exception] = []
+        self.finish_reason = "stop"
 
     async def model_version(self) -> str:
         return self.version
@@ -106,4 +107,5 @@ class FakeProvider(InferenceProvider):
         if self.failures:
             raise self.failures.pop(0)
         prompt_tokens = sum(len(m.content.split()) for m in request.messages)
-        return Completion(self.text, prompt_tokens, len(self.text.split()), "stop")
+        return Completion(self.text, prompt_tokens, 
+    len(self.text.split()), self.finish_reason)
