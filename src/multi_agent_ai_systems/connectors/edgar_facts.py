@@ -99,6 +99,7 @@ class Fact:
     accn: str
     filed: date
     answer_kind: str = "exact"  # "derived" is reserved for later (e.g. Q4)
+    period: str  # the resolved label, e.g. "FY2024" or "2024Q2", also for latest_* questions
 
 @dataclass(frozen=True)
 class _Row:
@@ -178,18 +179,65 @@ def _own_end(accn: str, fp: str, rows: list[_Row], filings: dict[str, _Filing]) 
     return None
 
 
-def _label_end(rows: list[_Row], filings: dict[str, _Filing], fy: int, fp: str) -> date:
-    """R3: the end date of the period labelled fy/fp, taken only from filings in which it is
-    their own period. Comparatives never supply a label."""
-    ends = {
-        r.end
-        for r in rows
-        if r.fy == fy and r.fp == fp and _own_end(r.accn, fp, rows, filings) == r.end
-    }
+def _labels(rows: list[_Row], filings: dict[str, _Filing]) -> dict[date, set[tuple[int, str]]]:
+    """R3: every (fy, fp) label, keyed by the end date of the period it names. Only a filing
+    whose own period ends on that date supplies a label; comparatives never do."""
+    own: dict[str, date | None] = {}
+    labels: dict[date, set[tuple[int, str]]] = {}
+    for r in rows:
+        if r.fy is None or r.fp not in ("FY", "Q1", "Q2", "Q3"):
+            continue
+        if r.accn not in own:
+            own[r.accn] = _own_end(r.accn, r.fp, rows, filings)
+        if own[r.accn] == r.end:
+            labels.setdefault(r.end, set()).add((r.fy, r.fp))
+    return labels
+
+
+def _label_end(labels: dict[date, set[tuple[int, str]]], fy: int, fp: str) -> date:
+    """The end date of the period labelled fy/fp; exactly one, and labelled only that way."""
+    ends = [end for end, names in labels.items() if (fy, fp) in names]
     if len(ends) != 1:
         found = "no filing" if not ends else f"filings disagree ({sorted(ends)})"
         raise FactError(FactErrorKind.UNRESOLVED_PERIOD, f"{fp} {fy}: {found}")
-    return ends.pop()
+    _name(labels, ends[0], quarter=False)  # raises if another filing labels it differently
+    return ends[0]
+
+
+def _name(labels: dict[date, set[tuple[int, str]]], end: date, *, quarter: bool) -> str:
+    """The label of the period ending on end. A fiscal year end is "{fy}Q4" when a quarter is
+    wanted."""
+    names = labels[end]
+    if len(names) != 1:
+        raise FactError(
+            FactErrorKind.UNRESOLVED_PERIOD, f"period ending {end} has labels {sorted(names)}"
+        )
+    fy, fp = next(iter(names))
+    if fp == "FY":
+        return f"{fy}Q4" if quarter else f"FY{fy}"
+    return f"{fy}{fp}"
+
+
+def _latest(
+    selector: str, spec: Metric, rows: list[_Row], labels: dict[date, set[tuple[int, str]]]
+) -> tuple[date, str]:
+    """R6: the end date and label a latest_* question resolves to."""
+    if not labels:
+        raise FactError(FactErrorKind.UNRESOLVED_PERIOD, "no filing labels any period")
+    if selector == "latest_annual":
+        ends = [end for end, names in labels.items() if any(fp == "FY" for _, fp in names)]
+    elif selector == "latest_reported_quarter" and not spec.instant:
+        ends = [
+            end
+            for end in labels
+            if any(r.end == end and r.has_length(QUARTER_DAYS) for r in rows)
+        ]
+    else:  # latest_quarter; for instant metrics also latest_reported_quarter
+        ends = list(labels)
+    if not ends:
+        raise FactError(FactErrorKind.NOT_REPORTED, f"no period for {selector}")
+    end = max(ends)
+    return end, _name(labels, end, quarter=selector != "latest_annual")
 
 
 def _choose(candidates: list[_Row], filings: dict[str, _Filing]) -> _Row:
@@ -221,26 +269,26 @@ def resolve_fact(
     if spec is None:
         raise FactError(FactErrorKind.UNSUPPORTED, f"unsupported metric: {metric!r}")
     wanted = parse_period(period)
-    if wanted.selector in LATEST:
-        raise NotImplementedError("latest_* selectors come in the next step")
     rows = _eligible(companyfacts, spec, as_of)
     filings = _filings(submissions)
+    labels = _labels(rows, filings)
 
-    annual = wanted.selector == "FY"
-    if annual or wanted.quarter == 4:  # {fy}Q4 ends on the FY{fy} end date
-        end = _label_end(rows, filings, wanted.fy, "FY")
+    if wanted.selector in LATEST:
+        end, label = _latest(wanted.selector, spec, rows, labels)
+    elif wanted.selector == "FY" or wanted.quarter == 4:  # {fy}Q4 ends on the FY{fy} end
+        end, label = _label_end(labels, wanted.fy, "FY"), period
     else:
-        end = _label_end(rows, filings, wanted.fy, f"Q{wanted.quarter}")
+        end, label = _label_end(labels, wanted.fy, f"Q{wanted.quarter}"), period
 
     if spec.instant:
         candidates = [r for r in rows if r.end == end]
     else:
-        days = ANNUAL_DAYS if annual else QUARTER_DAYS
+        days = ANNUAL_DAYS if label.startswith("FY") else QUARTER_DAYS
         candidates = [r for r in rows if r.end == end and r.has_length(days)]
     if not candidates:
-        raise FactError(FactErrorKind.NOT_REPORTED, f"no {metric} fact for {period}")
+        raise FactError(FactErrorKind.NOT_REPORTED, f"no {metric} fact for {label}")
     if len({r.start for r in candidates}) > 1:
-        raise FactError(FactErrorKind.UNRESOLVED_PERIOD, f"several {period} periods end {end}")
+        raise FactError(FactErrorKind.UNRESOLVED_PERIOD, f"several {label} periods end {end}")
 
     chosen = _choose(candidates, filings)
     return Fact(
@@ -248,7 +296,7 @@ def resolve_fact(
         unit=spec.unit,
         metric=metric,
         concept=chosen.concept,
-        period=period,
+        period=label,
         start=chosen.start,
         end=chosen.end,
         form=chosen.form,

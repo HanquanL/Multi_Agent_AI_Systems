@@ -244,3 +244,67 @@ def test_concept_change_resolves_by_filing_date(old_concept, new_concept):  # sp
     facts = {old_concept: ("USD", old), new_concept: ("USD", new)}
     fact = resolve_built(facts, filings, "Revenue", "FY2017")
     assert (fact.value, fact.concept) == (230, new_concept)
+
+RIGHT_AFTER_10K = date(2024, 11, 15)  # 2024 10-K filed 2024-11-01; next 10-Q 2025-01-31
+
+
+def test_latest_quarter_right_after_a_10k_is_not_reported():  # spec case 8, R6
+    kind = error_kind("NetIncome", "latest_quarter", as_of=RIGHT_AFTER_10K)
+    assert kind is FactErrorKind.NOT_REPORTED  # fiscal Q4 exists only inside the annual value
+
+
+def test_latest_reported_quarter_right_after_a_10k_is_q3():  # spec case 8, R6
+    fact = resolve("NetIncome", "latest_reported_quarter", as_of=RIGHT_AFTER_10K)
+    assert (fact.period, fact.value) == ("2024Q3", 21_448_000_000)
+    assert (fact.start, fact.end) == (date(2024, 3, 31), date(2024, 6, 29))
+
+
+def test_latest_annual_is_named_by_its_label():  # R6, R8
+    fact = resolve("NetIncome", "latest_annual")
+    assert (fact.period, fact.value) == ("FY2024", 93_736_000_000)
+
+
+@pytest.mark.parametrize("selector", ["latest_quarter", "latest_reported_quarter"])
+def test_instant_latest_quarter_right_after_a_10k_is_the_year_end(selector):  # spec case 11
+    fact = resolve("TotalAssets", selector, as_of=RIGHT_AFTER_10K)
+    assert (fact.period, fact.end) == ("2024Q4", date(2024, 9, 28))
+    assert fact.value == 364_980_000_000
+
+
+def test_unlisted_filing_falls_back_to_its_latest_fact():  # spec case 10, R3
+    rows = fact_rows(
+        """
+        2023-10-01 2024-09-28 2024 FY 10-K 2024-11-01 0000000001-24-000001 100
+        2022-09-25 2023-09-30 2024 FY 10-K 2024-11-01 0000000001-24-000001 80
+        """
+    )
+    facts = {"NetIncomeLoss": ("USD", rows)}
+    assert resolve_built(facts, "", "NetIncome", "FY2024").value == 100  # no submissions entry
+    with pytest.raises(FactError) as err:
+        resolve_built(facts, "", "NetIncome", "FY2023")  # the comparative still labels nothing
+    assert err.value.kind is FactErrorKind.UNRESOLVED_PERIOD
+
+
+def test_inconsistent_fallback_is_unresolved():  # spec case 10, R3
+    # An unlisted 10-Q whose latest end has only a 6-month value: its own period is unconfirmed.
+    rows = fact_rows("2024-09-29 2025-03-29 2025 Q2 10-Q 2025-05-02 0000000001-25-000002 50")
+    with pytest.raises(FactError) as err:
+        resolve_built({"NetIncomeLoss": ("USD", rows)}, "", "NetIncome", "2025Q2")
+    assert err.value.kind is FactErrorKind.UNRESOLVED_PERIOD
+
+
+@pytest.mark.parametrize("period", ["2024Q3", "latest_quarter"])
+def test_two_labels_for_one_period_are_unresolved(period):  # R3
+    rows = fact_rows(
+        """
+        2024-03-31 2024-06-29 2024 Q3 10-Q 2024-08-02 0000000001-24-000002 30
+        2024-03-31 2024-06-29 2025 Q3 10-Q/A 2024-09-10 0000000001-24-000003 30
+        """
+    )
+    filings = """
+    0000000001-24-000002 10-Q 2024-06-29 2024-08-02
+    0000000001-24-000003 10-Q/A 2024-06-29 2024-09-10
+    """
+    with pytest.raises(FactError) as err:
+        resolve_built({"NetIncomeLoss": ("USD", rows)}, filings, "NetIncome", period)
+    assert err.value.kind is FactErrorKind.UNRESOLVED_PERIOD

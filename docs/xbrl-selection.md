@@ -53,6 +53,8 @@ a later comparative or amendment must never influence an answer simulated earlie
   kind: 350 to 380 days is an annual period, 84 to 98 days is a quarter. Any other duration (for
   example a 6- or 9-month year-to-date value) is not used.
 - Instant facts have no start date and are identified by their `end` date alone.
+- If two different periods of the wanted length end on the same date (for example after a change
+  of fiscal year), the result is an "unresolved period" error rather than a choice between them.
 
 **R3. Period labels.** A reporting period is labelled with the `fy` and `fp` of a filing in which it
 is the filing's own period; values from filings where it is only a comparative never supply a
@@ -86,10 +88,11 @@ among them by filing date; one concept never overrides a more recently filed fac
 
 **R6. Latest periods.**
 - `latest_annual`: the labelled annual period with the latest end date.
-- `latest_quarter`: the most recent completed fiscal quarter. It ends at the latest end date among
-  all eligible duration facts of the metric. If no quarter-length fact exists for that end date
-  (usually fiscal Q4, which is reported only inside the annual value), the result is a
-  "not reported" error. The plugin does not derive Q4 in the first version.
+- `latest_quarter`: the most recent completed fiscal quarter. It ends at the latest end date that
+  carries a label (R3); a fiscal year end is named `{fy}Q4`. If no quarter-length fact exists for
+  that end date (usually fiscal Q4, which is reported only inside the annual value), the result is
+  a "not reported" error. The plugin does not derive Q4 in the first version. Only labelled end
+  dates are considered, because a period no filing names could not be answered anyway (R3).
 - `latest_reported_quarter`: the labelled quarter period with the latest end date that has a
   quarter-length fact.
 - For instant metrics, `FY2024` is the balance at the FY2024 year-end and `2024Q2` the balance at
@@ -106,7 +109,8 @@ returns a nearby or approximate value.
 **R8. Provenance.** Every answer carries: value, unit, metric, concept, period label, start and
 end dates (end only for instants), form, accession number, filing date, and `answer_kind`
 (`exact` for a reported value; `derived` is reserved for later, e.g. Q4 = annual minus nine-month
-year-to-date).
+year-to-date). The period label is the resolved one: a `latest_quarter` question answers with,
+for example, `2024Q3`, so the caller knows which period the value belongs to.
 
 ## Dependencies
 
