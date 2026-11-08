@@ -33,6 +33,7 @@ HOUR = 3600.0
 FACTS, SUBMISSIONS = companyfacts_key("320193"), submissions_key("320193")
 QUESTION = GenerationRequest((Message("user", "How did Apple do?"),), max_tokens=50)
 SPEC = ("320193:NetIncome:FY2024",)
+ASK = {"messages": [{"role": "user", "content": "How did Apple do?"}], "max_tokens": 50}
 
 def llm_for(service, clock):
     provider = FakeProvider()
@@ -179,11 +180,12 @@ async def test_bad_cik_fails_before_any_fetch(setup):
         await service.get_fact("AAPL", "NetIncome", "FY2024")  # tickers come later
     assert conn.calls == 0
 
-def make_server(service):
+def make_server(service, inference=None):
     return build_server(
         service.gateway,
         tools=[lambda s: register_tools(s, service)],
         answers={"get_fact": service.answers},
+        inference=inference,
     )
 
 
@@ -211,3 +213,25 @@ async def test_get_fact_tool_refusal_names_its_kind(setup):
         result = await client.call_tool("get_fact", args)
     assert result.is_error is True
     assert "not_reported:" in result.content[0].text
+
+async def test_generate_tool_grounds_in_facts(setup):
+    _, clock, service = setup
+    llm, provider = llm_for(service, clock)
+    async with Client(make_server(service, llm)) as client:
+        args = {**ASK, "context": list(SPEC)}
+        first = (await client.call_tool("generate", args)).structured_content
+        second = (await client.call_tool("generate", args)).structured_content
+    assert (first["source"], second["source"]) == ("upstream", "cache")
+    assert provider.calls == 1
+    assert "93736000000 USD" in provider.requests[0].messages[0].content
+
+
+async def test_generate_tool_reports_unanswerable_context(setup):
+    _, clock, service = setup
+    llm, provider = llm_for(service, clock)
+    args = {**ASK, "context": ["320193:NetIncome:2024Q4"]}
+    async with Client(make_server(service, llm)) as client:
+        result = await client.call_tool("generate", args)
+    assert result.is_error is True
+    assert "context error" in result.content[0].text
+    assert provider.calls == 0

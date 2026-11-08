@@ -1,7 +1,8 @@
 import asyncio
 from datetime import UTC, datetime
 
-from fakes import FakeClock, FakeConnector
+import pytest
+from fakes import FakeClock, FakeConnector, FakeProvider
 from mcp import Client
 
 from multi_agent_ai_systems.answers import AnswerCache
@@ -9,9 +10,12 @@ from multi_agent_ai_systems.cache import RecordCache
 from multi_agent_ai_systems.connectors.base import SourceError
 from multi_agent_ai_systems.dependencies import Dependency
 from multi_agent_ai_systems.gateway import FreshnessLabel, Gateway, Response
+from multi_agent_ai_systems.inference import InferenceGateway
+from multi_agent_ai_systems.llm import ModelPrice
 from multi_agent_ai_systems.server import build_server, to_payload
 from multi_agent_ai_systems.validity import TTLPolicy
 
+HELLO = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 50}
 
 def make_server(conn: FakeConnector):
     gateway = Gateway(conn, cache=RecordCache(1_000_000), policy=TTLPolicy(3600), clock=FakeClock())
@@ -113,3 +117,75 @@ async def test_plugins_add_tools_and_answer_cache_stats():
     assert names == {"get_record", "gateway_stats", "echo"}
     demo = stats["answers"]["demo"]
     assert demo == {"entries": 1, "outcomes": {"match": 1}, "changed_probes": {}}
+
+def make_llm_server(price=None):
+    gateway, _ = make_server(FakeConnector({}))
+    provider = FakeProvider()
+    llm = InferenceGateway(
+        provider,
+        cache=RecordCache(1_000_000),
+        policy=TTLPolicy(3600),
+        price=price,
+        clock=FakeClock(),
+    )
+    return build_server(gateway, inference=llm), provider
+
+
+async def test_generate_tool_reuses_answers_and_reports_estimated_cost():
+    server, provider = make_llm_server(ModelPrice(1.0, 2.0))
+    async with Client(server) as client:
+        first = (await client.call_tool("generate", HELLO)).structured_content
+        second = (await client.call_tool("generate", HELLO)).structured_content
+        stats = (await client.call_tool("gateway_stats", {})).structured_content
+
+    assert (first["text"], first["source"], first["answer_kind"]) == (
+        "an answer",
+        "upstream",
+        "generated",
+    )
+    assert second["source"] == "cache"
+    assert provider.calls == 1
+    counts = stats["inference"]["workloads"]["default"]
+    assert (counts["calls"], counts["cache_hits"]) == (1, 1)
+    assert counts["estimated_usd_spent"] == pytest.approx(5e-6)  # 1 input and 2 output tokens
+    assert counts["estimated_usd_avoided"] == pytest.approx(5e-6)
+
+
+async def test_local_model_reports_no_dollar_estimate():
+    server, _ = make_llm_server(price=None)
+    async with Client(server) as client:
+        await client.call_tool("generate", HELLO)
+        stats = (await client.call_tool("gateway_stats", {})).structured_content
+    counts = stats["inference"]["workloads"]["default"]
+    assert counts["estimated_usd_spent"] is None
+    assert counts["prompt_tokens_spent"] == 1  # usage is still counted
+    assert "generation_seconds_spent" in counts
+
+
+async def test_generate_tool_passes_the_workload():
+    server, provider = make_llm_server()
+    async with Client(server) as client:
+        await client.call_tool("generate", {**HELLO, "workload": "team-a"})
+        other = await client.call_tool("generate", {**HELLO, "workload": "team-b"})
+    assert other.structured_content["source"] == "upstream"
+    assert provider.calls == 2
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [[{"role": "robot", "content": "hi"}], [{"role": "user"}]],
+)
+async def test_generate_tool_rejects_bad_requests(messages):
+    server, provider = make_llm_server()
+    result = await call(server, "generate", {"messages": messages, "max_tokens": 50})
+    assert result.is_error is True
+    assert "bad request" in result.content[0].text
+    assert provider.calls == 0
+
+
+async def test_generate_tool_reports_source_failures():
+    server, provider = make_llm_server()
+    provider.failures = [SourceError("provider down")]
+    result = await call(server, "generate", HELLO)
+    assert result.is_error is True
+    assert "source error: provider down" in result.content[0].text

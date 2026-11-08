@@ -32,6 +32,7 @@ from multi_agent_ai_systems.llm import (
     GenerationRequest,
     InferenceProvider,
     Message,
+    ModelPrice,
     estimate_tokens,
     request_key,
 )
@@ -130,6 +131,7 @@ class InferenceGateway:
         store: SQLiteRecordStore | None = None,
         clock: Clock | None = None,
         context_source: ContextSource | None = None,
+        price: ModelPrice | None = None,
     ):
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -157,6 +159,7 @@ class InferenceGateway:
         self.attempts = 0
         self.stats = InferenceStats()
         self.context_source = context_source
+        self.price = price  # published prices; None for a local model with no provider bill
 
     async def generate(
         self,
