@@ -16,3 +16,7 @@ def sec_user_agent() -> str:
             "e.g. 'Jane Doe jane@example.com'. Copy .env.example to .env and fill it in."
         )
     return value
+
+def llm_api_key() -> str | None:
+    """The hosted LLM provider's key. Local models need none."""
+    return os.environ.get("LLM_API_KEY", "").strip() or None
