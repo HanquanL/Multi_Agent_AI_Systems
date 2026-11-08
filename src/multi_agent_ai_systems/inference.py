@@ -24,6 +24,7 @@ from multi_agent_ai_systems.llm import (
     GenerationRequest,
     InferenceProvider,
     request_key,
+    estimate_tokens,
 )
 from multi_agent_ai_systems.merging import RequestMerger
 from multi_agent_ai_systems.ratelimit import RateLimiter
@@ -100,6 +101,12 @@ class InferenceGateway:
             clock=self._clock,
             policy=allocation,
         )
+        tokens = provider.limits.tokens
+        self.token_limiter = (  # a window of tokens; None if the provider sets no such limit
+            RateLimiter(tokens, safety_factor=safety_factor, clock=self._clock)
+            if tokens is not None
+            else None
+        )
         self._merger = RequestMerger(self._generate_and_store)
         self._stored_at: dict[str, float] = {}  # gateway-clock time each response was stored
         self.attempts = 0
@@ -156,6 +163,8 @@ class InferenceGateway:
     async def close(self) -> None:
         await self._merger.close()
         self.limiter.close()
+        if self.token_limiter is not None:
+            self.token_limiter.close()
 
     async def _generate_and_store(
         self,
@@ -191,6 +200,10 @@ class InferenceGateway:
         attempt = 0
         while True:
             attempt += 1
+            if self.token_limiter is not None:
+                await self.token_limiter.acquire(
+                    workload, agent, cost=estimate_tokens(request)
+                )
             await self.limiter.acquire(workload, agent)
             self.attempts += 1
             start = self._clock.now()

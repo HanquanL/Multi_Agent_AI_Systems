@@ -10,6 +10,14 @@ from multi_agent_ai_systems.connectors.base import SourceError, ThrottledError
 from multi_agent_ai_systems.inference import InferenceGateway
 from multi_agent_ai_systems.llm import GenerationRequest, Message, ModelPrice
 from multi_agent_ai_systems.validity import TTLPolicy
+from multi_agent_ai_systems.connectors.base import RateLimit, SourceError, ThrottledError
+from multi_agent_ai_systems.llm import (
+    GenerationRequest,
+    Message,
+    ModelPrice,
+    ProviderLimits,
+    estimate_tokens,
+)
 
 DAY = 86_400.0
 HELLO = (Message("user", "hello"),)
@@ -175,3 +183,36 @@ async def test_generation_time_is_counted_apart_from_overhead():
 def test_price_gives_an_estimate_from_tokens():
     price = ModelPrice(input_per_million=1.0, output_per_million=2.0)
     assert price.usd(1_000_000, 500_000) == pytest.approx(2.0)
+
+class TokenLimitedProvider(FakeProvider):
+    limits = ProviderLimits(
+        requests=RateLimit(max_requests=100, period_seconds=60.0),
+        tokens=RateLimit(max_requests=100, period_seconds=60.0),  # 100 tokens a minute
+    )
+
+
+def test_estimate_reserves_the_whole_output_allowance():
+    assert estimate_tokens(req()) == 55  # "hello": 1 + 4 per message, plus max_tokens 50
+
+
+async def test_call_waits_when_the_token_limit_is_used_up():
+    gateway, _, clock = make(TokenLimitedProvider())
+    await gateway.generate(req())  # reserves 55
+    assert clock.now() == 0
+    await gateway.generate(req(messages=(Message("user", "hello there"),)))  # reserves 56
+    assert clock.now() == pytest.approx(60.0)
+
+
+async def test_request_larger_than_the_token_limit_is_rejected():
+    gateway, provider, _ = make(TokenLimitedProvider())
+    with pytest.raises(ValueError):
+        await gateway.generate(req(max_tokens=200))
+    assert provider.calls == 0
+
+
+async def test_cache_hit_reserves_no_tokens():
+    gateway, _, clock = make(TokenLimitedProvider())
+    await gateway.generate(req())
+    await gateway.generate(req())
+    assert clock.now() == 0
+    assert gateway.token_limiter.stats["default"].admitted == 1

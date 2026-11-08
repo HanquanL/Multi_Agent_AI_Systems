@@ -147,3 +147,34 @@ async def test_close_rejects_queued_callers():
     limiter.close()
     results = await asyncio.gather(*queued, return_exceptions=True)
     assert all(isinstance(r, LimiterClosedError) for r in results)
+
+async def test_weighted_request_waits_until_its_cost_fits():
+    clock = FakeClock()
+    limiter = RateLimiter(TEN_PER_SECOND, clock=clock)
+    await limiter.acquire(cost=6)
+    await limiter.acquire(cost=4)  # fills the window exactly
+    assert clock.now() == 0
+    await limiter.acquire(cost=1)
+    assert clock.now() == pytest.approx(1.0)
+
+
+async def test_small_request_does_not_overtake_a_large_one():
+    clock = FakeClock()
+    limiter = RateLimiter(TEN_PER_SECOND, clock=clock)
+    await limiter.acquire(cost=8)
+    order = []
+
+    async def ask(name, cost):
+        await limiter.acquire(cost=cost)
+        order.append((name, clock.now()))
+
+    await asyncio.gather(ask("large", 8), ask("small", 1))  # small alone would fit now
+    assert [name for name, _ in order] == ["large", "small"]
+    assert order[1][1] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("cost", [0, 11])
+async def test_cost_must_fit_the_limit(cost):
+    limiter = RateLimiter(TEN_PER_SECOND, clock=FakeClock())
+    with pytest.raises(ValueError):
+        await limiter.acquire(cost=cost)

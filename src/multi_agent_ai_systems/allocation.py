@@ -19,6 +19,7 @@ class Waiter:
     workload: str  # the bucket the policy assigned, not necessarily the caller's name
     agent: str
     admitted: asyncio.Future[None]
+    cost: int = 1  # capacity it uses in the window, e.g. tokens
 
 
 class AllocationPolicy(Protocol):
@@ -28,7 +29,7 @@ class AllocationPolicy(Protocol):
 
     def choose(self, waiting: Sequence[Waiter], usage: Mapping[str, int]) -> Waiter:
         """Pick the next waiter to admit. waiting is in arrival order and never empty;
-        usage counts admissions per bucket in the current window."""
+        usage counts the capacity admitted per bucket in the current window."""
         ...
 
 

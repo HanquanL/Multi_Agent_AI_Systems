@@ -55,7 +55,7 @@ class RateLimiter:
         self.period = limit.period_seconds
         self.policy = policy or QuotaFIFO()
         self._clock = clock or RealClock()
-        self._admitted: deque[tuple[float, str]] = deque()  # (time, bucket)
+        self._admitted: deque[tuple[float, str, int]] = deque()  # (time, bucket, cost)
         self._waiting: list[Waiter] = []
         self._dispatcher: asyncio.Task[None] | None = None
         self._closed = False
@@ -70,13 +70,21 @@ class RateLimiter:
         if self._dispatcher is not None:
             self._dispatcher.cancel()
 
-    async def acquire(self, workload: str = DEFAULT_WORKLOAD, agent: str = "anonymous") -> None:
-        """Wait until the policy admits this request into the window."""
+    async def acquire(
+        self, workload: str = DEFAULT_WORKLOAD, agent: str = "anonymous", *, cost: int = 1
+    ) -> None:
+        """Wait until the policy admits this request into the window. cost is the capacity
+        it uses, 1 for a plain request; it can be any unit, such as tokens."""
         if self._closed:
             raise LimiterClosedError("rate limiter is closed")
+        if not 1 <= cost <= self.max_requests:
+            raise ValueError(f"cost must be between 1 and {self.max_requests}, got {cost}")
         start = self._clock.now()
         waiter = Waiter(
-            self.policy.bucket(workload), agent, asyncio.get_running_loop().create_future()
+            self.policy.bucket(workload),
+            agent,
+            asyncio.get_running_loop().create_future(),
+            cost,
         )
         self._waiting.append(waiter)
         if self._dispatcher is None or self._dispatcher.done():
@@ -103,11 +111,15 @@ class RateLimiter:
             now = self._clock.now()
             while self._admitted and self._admitted[0][0] <= now - self.period:
                 self._admitted.popleft()
-            if len(self._admitted) >= self.max_requests:
-                await self._clock.sleep(self._admitted[0][0] + self.period - now)
-                continue
-            usage = Counter(bucket for _, bucket in self._admitted)
-            waiter = self.policy.choose(self._waiting, usage)
-            self._waiting.remove(waiter)
-            self._admitted.append((now, waiter.workload))
-            waiter.admitted.set_result(None)
+            used = sum(cost for _, _, cost in self._admitted)
+            if used < self.max_requests:
+                usage: Counter[str] = Counter()
+                for _, bucket, cost in self._admitted:
+                    usage[bucket] += cost
+                waiter = self.policy.choose(self._waiting, usage)
+                if used + waiter.cost <= self.max_requests:  # otherwise it keeps its place
+                    self._waiting.remove(waiter)
+                    self._admitted.append((now, waiter.workload, waiter.cost))
+                    waiter.admitted.set_result(None)
+                    continue
+            await self._clock.sleep(self._admitted[0][0] + self.period - now)

@@ -119,3 +119,8 @@ def request_key(
     }
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "llm/" + hashlib.sha256(canonical.encode()).hexdigest()
+
+def estimate_tokens(request: GenerationRequest) -> int:
+    """Tokens to reserve before sending: about 4 characters per input token, plus the whole
+    output allowance, since the real count is known only afterwards."""
+    return sum(len(m.content) // 4 + 4 for m in request.messages) + request.max_tokens
