@@ -1,15 +1,15 @@
-"""Run the shared data gateway for SEC EDGAR as an MCP server.
+"""Run the shared gateway as an MCP server: an LLM, a data source, or both.
 
-uv run --env-file .env python -m multi_agent_ai_systems --http 8000   # shared, many agents
-uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --db gateway.db  # + disk
-uv run --env-file .env python -m multi_agent_ai_systems               # stdio, one agent
-Every result has a freshness label: source version, fetch time, age, and cache or source.
-For one financial value with its source filing, call get_fact (e.g. NetIncome, FY2024).
-
-uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --llm-model llama3.2:3b  # + LLM
+uv run python -m multi_agent_ai_systems --http 8000 --llm-model llama3.2:3b         # LLM only
+uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --edgar          # SEC EDGAR
+uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --edgar --llm-model llama3.2:3b
+Add --db / --llm-db to keep records / LLM answers in SQLite across restarts. Without --http, one
+agent talks to its own server over stdio and nothing is shared.
 """
 
 import argparse
+
+from mcp.server.mcpserver import MCPServer
 
 from multi_agent_ai_systems.allocation import QuotaFIFO
 from multi_agent_ai_systems.cache import RecordCache
@@ -29,12 +29,16 @@ from multi_agent_ai_systems.server import build_server
 from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import TTLPolicy
 
-INSTRUCTIONS = """Shared gateway to SEC EDGAR. Call get_record with one of these keys:
+EDGAR_INSTRUCTIONS = """Shared gateway to SEC EDGAR. Call get_record with one of these keys:
   submissions/<CIK>                              a company's filing list
   companyfacts/<CIK>                             all XBRL financial facts for a company
   archive/edgar/data/<cik>/<accession>/<file>    one filing document
 CIKs in keys are 10 digits, zero-padded: Apple is 0000320193.
 Every result has a freshness label: source version, fetch time, age, and cache or source."""
+
+LLM_INSTRUCTIONS = """Call generate to use the shared LLM. Identical requests from your workload
+are answered once and reused while still valid; each result says whether it came from the cache,
+the disk store, a merged call or the model. gateway_stats shows what was spent and avoided."""
 
 
 def workload_quota(text: str) -> tuple[str, int]:
@@ -44,7 +48,7 @@ def workload_quota(text: str) -> tuple[str, int]:
         raise argparse.ArgumentTypeError(f"expected NAME=QUOTA with QUOTA >= 1, got {text!r}")
     return name, int(quota)
 
-def build_inference(args: argparse.Namespace, facts: FactService) -> InferenceGateway | None:
+def build_inference(args: argparse.Namespace, facts: FactService | None) -> InferenceGateway | None:
     if not args.llm_model:
         return None
     tokens = RateLimit(args.llm_tpm, 60.0) if args.llm_tpm else None
@@ -62,12 +66,15 @@ def build_inference(args: argparse.Namespace, facts: FactService) -> InferenceGa
         policy=TTLPolicy(args.llm_ttl),
         safety_factor=0.8,
         store=SQLiteRecordStore(args.llm_db, args.db_mb * 1_000_000) if args.llm_db else None,
-        context_source=FactContext(facts),
+        context_source=FactContext(facts) if facts is not None else None,
         price=ModelPrice(*args.llm_price) if args.llm_price else None,
     )
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Shared data gateway for SEC EDGAR")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Shared gateway for AI applications")
+    parser.add_argument(
+        "--edgar", action="store_true", help="serve SEC EDGAR data and get_fact (needs .env)"
+    )
     parser.add_argument("--http", type=int, metavar="PORT", help="serve HTTP on this port")
     parser.add_argument("--cache-mb", type=int, default=256, help="cache capacity in MB")
     parser.add_argument("--ttl", type=float, default=3600.0, help="cache TTL in seconds")
@@ -110,25 +117,44 @@ def main() -> None:
         metavar=("INPUT", "OUTPUT"),
         help="published USD per million tokens, for estimates",
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    connector = EdgarConnector(sec_user_agent())
-    gateway = Gateway(
-        connector,
-        cache=RecordCache(args.cache_mb * 1_000_000),
-        policy=TTLPolicy(args.ttl),
-        safety_factor=0.8,
-        allocation=QuotaFIFO(dict(args.workload), default_quota=args.default_quota),
-        store=SQLiteRecordStore(args.db, args.db_mb * 1_000_000) if args.db else None,
-    )
-    facts = FactService(gateway)
-    server = build_server(
+
+def build(args: argparse.Namespace) -> MCPServer:
+    if not args.edgar and not args.llm_model:
+        raise SystemExit("nothing to serve: add --llm-model, --edgar, or both")
+    gateway = facts = None
+    tools = []
+    answers = {}
+    instructions = []
+    if args.edgar:
+        gateway = Gateway(
+            EdgarConnector(sec_user_agent()),
+            cache=RecordCache(args.cache_mb * 1_000_000),
+            policy=TTLPolicy(args.ttl),
+            safety_factor=0.8,
+            allocation=QuotaFIFO(dict(args.workload), default_quota=args.default_quota),
+            store=SQLiteRecordStore(args.db, args.db_mb * 1_000_000) if args.db else None,
+        )
+        facts = FactService(gateway)
+        tools.append(lambda s: register_tools(s, facts))
+        answers["get_fact"] = facts.answers
+        instructions.append(EDGAR_INSTRUCTIONS)
+    if args.llm_model:
+        instructions.append(LLM_INSTRUCTIONS)
+    return build_server(
         gateway,
-        instructions=INSTRUCTIONS,
-        tools=[lambda s: register_tools(s, facts)],
-        answers={"get_fact": facts.answers},
+        name="shared-gateway",
+        instructions="\n\n".join(instructions),
+        tools=tools,
+        answers=answers,
         inference=build_inference(args, facts),
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    server = build(args)
     if args.http:
         server.run("streamable-http", port=args.http)
     else:
