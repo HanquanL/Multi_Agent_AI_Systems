@@ -1,0 +1,178 @@
+Live LLM-only run without any data source, 2026-11-15 (F27)
+
+Purpose: acceptance test for running the gateway without SEC EDGAR. No .env, no --edgar, no
+SEC_USER_AGENT; only Ollama, with non-financial prompts.
+
+Code: commit 2a5e6f7. Offline suite at that commit: 274 passed.
+Model: llama3.2:3b (ID a80c4f17acd5, Q4_K_M) on Ollama 0.40.16, already running in the background.
+general.db did not exist before the first run.
+
+Server (terminal 1), started fresh for run 1 and again for run 2:
+  uv run python -m multi_agent_ai_systems --http 8000 --llm-model llama3.2:3b --llm-db general.db
+Client (terminal 2, Python REPL):
+  uv run python
+
+Code:
+  import asyncio, json, time
+  from collections import Counter
+  from mcp import Client
+
+  URL = "http://127.0.0.1:8000/mcp"
+  QUESTIONS = [
+      "Translate 'good morning' into French. Answer with the translation only.",
+      "At sea level, what is the boiling point of water in Celsius? Answer with a number.",
+      "Name the largest planet in the solar system. Answer with one word.",
+      "In one sentence, what does a network router do?",
+      "Write a haiku about waiting in line.",
+  ]
+  AGENTS = ["agent-1", "agent-2", "agent-3"]
+
+  def ask(text, workload="support-team", agent="agent-1"):
+      return {"messages": [{"role": "user", "content": text}], "max_tokens": 120,
+              "workload": workload, "agent_id": agent}
+
+  async def one(client, args):
+      r = await client.call_tool("generate", args)
+      if r.is_error:
+          return "ERROR " + r.content[0].text, None
+      a = r.structured_content
+      return a["source"], a
+
+  async def round_(client, label):
+      start = time.perf_counter()
+      calls = [one(client, ask(q, agent=g)) for q in QUESTIONS for g in AGENTS]
+      results = await asyncio.gather(*calls)
+      seconds = time.perf_counter() - start
+      sources = Counter(source for source, _ in results)
+      print(f"{label:<10} {len(results)} requests in {seconds:6.2f}s  {dict(sources)}")
+      return results
+
+  async def main():
+      async with Client(URL) as client:
+          first = await round_(client, "round 1")
+          await round_(client, "round 2")
+          source, _ = await one(client, ask(QUESTIONS[2], workload="team-b"))
+          print(f"team-b     1 request  {source}")
+          s = (await client.call_tool("gateway_stats", {})).structured_content
+      print("\nanswers:")
+      for i, q in enumerate(QUESTIONS):
+          a = first[i * len(AGENTS)][1]
+          if a:
+              print(f"  {a['finish_reason']:<6} {a['prompt_tokens']}+{a['completion_tokens']:<4} "
+                    f"{a['text'][:70]!r}")
+      print("\ndata source configured:", "upstream_attempts" in s)
+      print(json.dumps(s["inference"], indent=2))
+
+  asyncio.run(main())
+
+
+=== Run 1: fresh server, empty general.db ===
+round 1    15 requests in   2.83s  {'merged': 10, 'upstream': 5}
+round 2    15 requests in   0.02s  {'cache': 15}
+team-b     1 request  upstream
+
+answers:
+  stop   39+7    'Bonne matinée.'
+  stop   44+4    '100°C.'
+  stop   39+4    'Jupiter.'
+  stop   36+33   'A network router acts as a central hub that connects multiple devices '
+  stop   34+17   'Slowly moving pace\nFrustration in crowded space\nPatience wears thin'
+
+data source configured: False
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "attempts": 6,
+  "cache": {
+    "entries": 6,
+    "used_bytes": 1040,
+    "evictions": 0
+  },
+  "store": {
+    "entries": 6,
+    "used_bytes": 1040,
+    "occupancy": 0.0,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "changed_probes": {},
+  "workloads": {
+    "default": {
+      "cache_hits": 15,
+      "store_hits": 0,
+      "merged": 10,
+      "misses": 16,
+      "calls": 6,
+      "prompt_tokens_spent": 231,
+      "completion_tokens_spent": 69,
+      "prompt_tokens_avoided": 960,
+      "completion_tokens_avoided": 325,
+      "generation_seconds_spent": 11.17954760000066,
+      "generation_seconds_avoided": 55.660411000008025,
+      "overhead_seconds": 1.4998576000070898,
+      "invalidated": 0,
+      "estimated_usd_spent": null,
+      "estimated_usd_avoided": null
+    }
+  }
+}
+
+(A first attempt at run 2 failed with "httpx2.ConnectError: All connection attempts failed"
+because the client was started before the restarted server was listening on port 8000. It is
+not a gateway error; the traceback is omitted.)
+
+
+=== Run 2: server restarted, same general.db ===
+round 1    15 requests in   0.35s  {'cache': 10, 'store': 5}
+round 2    15 requests in   0.02s  {'cache': 15}
+team-b     1 request  store
+
+answers:
+  stop   39+7    'Bonne matinée.'
+  stop   44+4    '100°C.'
+  stop   39+4    'Jupiter.'
+  stop   36+33   'A network router acts as a central hub that connects multiple devices '
+  stop   34+17   'Slowly moving pace\nFrustration in crowded space\nPatience wears thin'
+
+data source configured: False
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "attempts": 0,
+  "cache": {
+    "entries": 6,
+    "used_bytes": 1040,
+    "evictions": 0
+  },
+  "store": {
+    "entries": 6,
+    "used_bytes": 1040,
+    "occupancy": 0.0,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "changed_probes": {},
+  "workloads": {
+    "default": {
+      "cache_hits": 31,
+      "store_hits": 6,
+      "merged": 0,
+      "misses": 0,
+      "calls": 0,
+      "prompt_tokens_spent": 0,
+      "completion_tokens_spent": 0,
+      "prompt_tokens_avoided": 1191,
+      "completion_tokens_avoided": 394,
+      "generation_seconds_spent": 0.0,
+      "generation_seconds_avoided": 66.83995860000869,
+      "overhead_seconds": 4.496486299995013,
+      "invalidated": 0,
+      "estimated_usd_spent": null,
+      "estimated_usd_avoided": null
+    }
+  }
+}

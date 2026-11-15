@@ -1,0 +1,129 @@
+Live LLM restart run after one week, 2026-11-15 (F26)
+
+Purpose: the 24-hour acceptance test. Answers stored on 2026-11-08 (F25) in live-llm.db are served
+after the gateway and Ollama were shut down for a week.
+
+Code: commit d664ed0 (gateway code as of 7497b74). Offline suite at that commit: 268 passed.
+Model: llama3.2:3b, ID a80c4f17acd5, 3.2B parameters, Q4_K_M quantization.
+Ollama: 0.40.15 when the answers were stored, 0.40.16 at this run (it updated itself in between).
+LLM response lifetime: default 604800 s (7 days). Whether --llm-ttl 1209600 was passed is not
+recorded; every age below is under 604800 s, so the result holds either way.
+live-llm.db last written 2026-11-08 15:28:21 -0500 before this run.
+
+Ollama: already running in the background ("ollama serve" reported the port in use).
+Server (terminal 1):
+  uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --llm-model llama3.2:3b --llm-db live-llm.db
+Client (terminal 2, Python REPL):
+  uv run python
+
+Code:
+  import asyncio, json, time
+  from datetime import datetime
+  from mcp import Client
+
+  URL = "http://127.0.0.1:8000/mcp"
+
+  def ask(text, max_tokens=40, **extra):
+      return {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, **extra}
+
+  PLAIN = ask("Name one primary color. Answer with one word.")
+  TOGETHER = ask("Name one planet. Answer with one word.")
+  GROUNDED = ask("What was Apple's FY2024 net income? Use the data given.", max_tokens=300,
+                 context=["320193:NetIncome:FY2024"])
+  CUT = ask("Count from one to one hundred in words.", max_tokens=3)
+
+  async def one(client, label, args):
+      start = time.perf_counter()
+      r = await client.call_tool("generate", args)
+      seconds = time.perf_counter() - start
+      if r.is_error:
+          print(f"{label:<14} ERROR {r.content[0].text}")
+          return
+      a = r.structured_content
+      print(f"{label:<14} {a['source']:<9} {seconds:6.2f}s  age {a['age_seconds']:>10.0f}s  "
+            f"{a['finish_reason']:<7} {a['model_version']}  {a['text'][:50]!r}")
+
+  async def main():
+      print("run at", datetime.now().isoformat(timespec="seconds"))
+      async with Client(URL) as client:
+          await one(client, "plain", PLAIN)
+          await one(client, "plain again", PLAIN)
+          await one(client, "other team", {**PLAIN, "workload": "team-b"})
+          await asyncio.gather(*(one(client, f"together {i}", TOGETHER) for i in range(3)))
+          await one(client, "grounded", GROUNDED)
+          await one(client, "grounded again", GROUNDED)
+          await one(client, "cut off", CUT)
+          await one(client, "cut off again", CUT)
+          s = (await client.call_tool("gateway_stats", {})).structured_content
+      print(json.dumps(s["inference"], indent=2))
+      print("SEC requests:", s["upstream_attempts"])
+
+  asyncio.run(main())
+
+
+Output:
+
+run at 2026-11-15T15:13:26
+plain          store       0.65s  age     604314s  stop    llama3.2:3b@1794165540  'Blue'
+plain again    cache       0.00s  age     604314s  stop    llama3.2:3b@1794165540  'Blue'
+other team     store       0.00s  age     604314s  stop    llama3.2:3b@1794165540  'Blue'
+together 0     store       0.00s  age     604314s  stop    llama3.2:3b@1794165540  'Mars'
+together 1     cache       0.01s  age     604314s  stop    llama3.2:3b@1794165540  'Mars'
+together 2     cache       0.01s  age     604314s  stop    llama3.2:3b@1794165540  'Mars'
+grounded       store       0.54s  age     604121s  stop    llama3.2:3b@1794165540  'The data provided is for CIK 0000320193, which is '
+grounded again cache       0.01s  age     604122s  stop    llama3.2:3b@1794165540  'The data provided is for CIK 0000320193, which is '
+cut off        upstream   25.38s  age          0s  length  llama3.2:3b@1794165540  "Here's counting"
+cut off again  upstream    0.04s  age          0s  length  llama3.2:3b@1794165540  "Here's counting"
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "attempts": 2,
+  "cache": {
+    "entries": 4,
+    "used_bytes": 1044,
+    "evictions": 0
+  },
+  "store": {
+    "entries": 4,
+    "used_bytes": 1044,
+    "occupancy": 0.0,
+    "evictions": 0,
+    "evicted_bytes": 0,
+    "too_large": 0,
+    "unstorable": 0
+  },
+  "changed_probes": {},
+  "workloads": {
+    "default": {
+      "cache_hits": 8,
+      "store_hits": 4,
+      "merged": 0,
+      "misses": 2,
+      "calls": 2,
+      "prompt_tokens_spent": 68,
+      "completion_tokens_spent": 6,
+      "prompt_tokens_avoided": 383,
+      "completion_tokens_avoided": 169,
+      "generation_seconds_spent": 25.41237799999726,
+      "generation_seconds_avoided": 5.760378499999206,
+      "overhead_seconds": 0.8209855000095558,
+      "invalidated": 0,
+      "estimated_usd_spent": null,
+      "estimated_usd_avoided": null
+    }
+  }
+}
+SEC requests: 2
+
+
+=== ollama --version ===
+ollama version is 0.40.16
+
+=== ollama show llama3.2:3b (model section) ===
+  Model
+    architecture        llama
+    parameters          3.2B
+    context length      131072
+    embedding length    3072
+    quantization        Q4_K_M
+    template source     go_template

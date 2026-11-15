@@ -339,3 +339,50 @@ data was "not for Apple specifically", because the prompt identifies the company
 generated text remains unverified. Quantization was not recorded.
 Offline: 268 tests.
 Raw output: [runs/2026-11-08-llm-live.txt](runs/2026-11-08-llm-live.txt)
+
+## F26. Stored LLM answers are reused a week later, across a full shutdown
+*2026-11-15 · verified (live, local model, one run)*
+
+This is the 24-hour acceptance run. The answers stored on 2026-11-08 (F25) were served after the
+gateway and Ollama had been shut down for a week. The same 10 requests as in F25 made 2 model
+calls, both for the prompt cut off by `max_tokens`, which is never stored; 4 answers came from the
+SQLite store and 4 from memory. The answers were 604,314 s old (7 days minus 486 s), within the
+default 7-day response lifetime. The grounded answer was rechecked with 2 SEC requests, its fact
+still matched, and it was reused with the same value, $93,736,000,000. Token counters matched a
+hand calculation (68 + 6 spent, 383 + 169 avoided).
+
+Ollama updated itself from 0.40.15 to 0.40.16 between storing and reusing, and the answers were
+still reused. The model version in the key is the model ID plus the `created` time from `/models`,
+so it tracks the model files, not the runtime that executes them. The weights were unchanged here
+(same ID `a80c4f17acd5`), so reuse was correct, but a runtime update can change output slightly
+and the gateway cannot see it.
+
+Limits: one run, one model. Whether the server was started with `--llm-ttl 1209600` was not
+recorded; every age is below the default lifetime, so the result holds either way. The cut-off
+call's 25.38 s includes loading the model. The run shows survival across a shutdown and a week of
+ageing, not a week of continuous uptime. Model: `llama3.2:3b`, 3.2B parameters, Q4_K_M.
+Offline: 268 tests at the code used (commit 7497b74).
+Raw output: [runs/2026-11-15-llm-24h-restart.txt](runs/2026-11-15-llm-24h-restart.txt)
+
+## F27. The gateway runs without any data source, and non-financial prompts are reused
+*2026-11-15 · verified (live, local model, one session)*
+
+The gateway started with only `--llm-model` and `--llm-db`: no `.env`, no `--edgar`, no SEC
+settings. Its stats had no data-source section. Three agents in one workload sent the same five
+non-financial prompts (a translation, a fact, a one-word answer, a definition and a haiku)
+concurrently, then again. 31 requests, counting one from a second workload, made 6 model calls:
+in round 1, 5 calls served 15 requests (10 merged into calls in flight); round 2 was 15 cache hits
+in 0.02 s; the second workload's identical prompt was generated separately. After a restart on the
+same SQLite file, the same 31 requests made 0 model calls: 6 came from the store and 25 from
+memory, including the second workload's own answer. Token counters matched a hand calculation in
+both runs (run 2: 1,191 + 394 avoided).
+
+Limits: the prompts were chosen to repeat, so 6 calls for 62 requests is not a general savings
+rate; that needs the with/without-gateway experiment. LLM counters are pooled under `default`
+because the LLM path has no per-workload allocation policy, so per-workload numbers are not
+available, even though answers stay private per workload. `generation_seconds` and
+`overhead_seconds` add up each request's own latency, so concurrent requests count shared waiting
+more than once: run 1 reports 11.18 s of generation in a round that took 2.83 s, and run 2 reports
+4.50 s of overhead for rounds that took 0.37 s. Time comparisons must use elapsed wall-clock time.
+Offline: 274 tests (commit 2a5e6f7).
+Raw output: [runs/2026-11-15-llm-only-nonfinance.txt](runs/2026-11-15-llm-only-nonfinance.txt)
