@@ -189,3 +189,22 @@ async def test_generate_tool_reports_source_failures():
     result = await call(server, "generate", HELLO)
     assert result.is_error is True
     assert "source error: provider down" in result.content[0].text
+
+async def test_llm_only_server_needs_no_data_source():
+    llm = InferenceGateway(
+        FakeProvider(), cache=RecordCache(1_000_000), policy=TTLPolicy(3600), clock=FakeClock()
+    )
+    server = build_server(None, inference=llm)
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        await client.call_tool("generate", HELLO)
+        stats = (await client.call_tool("gateway_stats", {})).structured_content
+
+    assert names == {"generate", "gateway_stats"}
+    assert "upstream_attempts" not in stats  # no data source, no data counters
+    assert stats["inference"]["workloads"]["default"]["calls"] == 1
+
+
+def test_server_needs_something_to_serve():
+    with pytest.raises(ValueError):
+        build_server(None)
