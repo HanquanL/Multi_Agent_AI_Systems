@@ -161,6 +161,33 @@ async def other_team(question: str) -> ActionResult:
 
     return await measured("Another team asks the same question", work,question)
 
+APPLE_FILINGS = "submissions/0000320193"
+
+
+async def fetch_record(client: Client, key: str, agent: str) -> Row:
+    args = {"key": key, "workload": TEAM, "agent_id": agent}
+    start = time.perf_counter()
+    result = await client.call_tool("get_record", args)
+    row = {"agent": agent, "seconds": round(time.perf_counter() - start, 2)}
+    if result.is_error:
+        return {**row, "source": "error", "detail": result.content[0].text}
+    label = result.structured_content["freshness"]
+    return {
+        **row,
+        "source": label["source"],
+        "version": label["version"],
+        "age (s)": round(label["age_seconds"]),
+    }
+
+
+async def shared_record() -> ActionResult:
+    async def work(client: Client) -> list[Row]:
+        calls = [fetch_record(client, APPLE_FILINGS, agent) for agent in AGENTS]
+        return list(await asyncio.gather(*calls))
+
+    question = f"get_record {APPLE_FILINGS} (Apple's list of SEC filings)"
+    return await measured("Three agents fetch the same SEC record at the same time", 
+                          work, question)
 
 async def data_path(metrics: list[str], period: str) -> ActionResult:
     asked = [*metrics, metrics[0]]  # the first one again, to show the answer being reused
@@ -209,10 +236,14 @@ async def current_totals() -> dict[str, int]:
     async with Client(URL) as client:
         return snapshot(await stats(client))
 
-async def warm_up() -> None:
-    """Load the model before the audience is watching; the first call is slow."""
+async def warm_up() -> Row:
+    """Load the model before the audience is watching; the first call is slow. Raises if the
+    model did not answer, so a failed warm-up is never reported as success."""
     async with Client(URL) as client:
-        await generate(client, "Say OK.", workload="warm-up", max_tokens=5)
+        row = await generate(client, "Say OK.", workload="warm-up", max_tokens=5)
+    if row["source"] == "error":
+        raise RuntimeError(row["answer"])
+    return row
     
 def show(result: ActionResult) -> None:
     print(f"\n== {result.title}  ({result.seconds} s)")
@@ -236,6 +267,7 @@ def main() -> None:
         lambda: concurrent(question),
         lambda: repeat(question),
         lambda: other_team(question),
+        shared_record,
         lambda: data_path(["NetIncome", "Revenue"], "FY2024"),
         grounded,
     ]

@@ -19,15 +19,14 @@ START = (
     "--llm-model llama3.2:3b --db demo-data.db --llm-db demo-llm.db"
 )
 
-
-def run(coroutine):
+def run(coroutine, failure: str = "Gateway request failed"):
     try:
         return asyncio.run(coroutine)
-    except Exception as exc:  # the gateway is not running or not reachable
-        st.error(f"Cannot reach the gateway at {actions.URL} ({type(exc).__name__}). Start it:")
+    except Exception as exc:
+        st.error(f"{failure}: {type(exc).__name__}: {exc}")
+        st.caption("If the gateway is not running, start it with:")
         st.code(START)
         st.stop()
-
 
 def show(result: actions.ActionResult) -> None:
     st.subheader(result.title)
@@ -41,6 +40,19 @@ def show(result: actions.ActionResult) -> None:
             column.metric(name, f"+{change:,}")
     else:
         st.write("No counters changed.")
+    st.caption(
+        "Counter changes during this step. Requests from any other client of the gateway in the "
+        "same seconds would be counted too."
+    )
+    if any(row.get("source") == "error" or "result" in row for row in result.rows):
+        st.warning("Some requests failed; see the table below.")
+    if "at the same time" in result.title and not (
+        result.changes["model calls"] or result.changes["SEC requests"]
+    ):
+        st.warning(
+            "This was already answered earlier, so there was nothing to merge. Pick a new "
+            "question, or restart the gateway with the fresh-start command."
+        )
     st.table(result.rows)
 
 
@@ -72,8 +84,10 @@ with st.sidebar:
 
     st.divider()
     if st.button("Warm up the model"):
-        run(actions.warm_up())
-        st.toast("Model loaded")
+        row = run(actions.warm_up(), "Warm-up failed; is Ollama running")
+        st.success(f"Model ready ({row['seconds']} s)")
+    if st.button("Clear page history"):
+        st.session_state["history"] = []
     st.markdown(
         "**Persistence:** stop the gateway (Ctrl+C), start it again, then press step 2. "
         "The answers come back from disk (`store`) with no model call."
@@ -83,8 +97,9 @@ steps = {
     "1. Three agents at once": lambda: actions.concurrent(question),
     "2. Ask again": lambda: actions.repeat(question),
     "3. Another team": lambda: actions.other_team(question),
-    "4. Financial facts": lambda: actions.data_path(fact_metrics or ["NetIncome"], fact_period),
-    "5. Grounded answer": lambda: actions.grounded(llm_metric, llm_period),
+    "4. Shared SEC record": actions.shared_record,
+    "5. Financial facts": lambda: actions.data_path(fact_metrics or ["NetIncome"], fact_period),
+    "6. Grounded answer": lambda: actions.grounded(llm_metric, llm_period),
 }
 history = st.session_state.setdefault("history", [])
 for column, (label, make) in zip(st.columns(len(steps)), 
