@@ -81,10 +81,16 @@ _DIRECTIONS = [  # questions must agree on whether they use a word from each gro
     frozenset("last".split()),
 ]
 
+_REQUEST_PHRASES = re.compile(r"\b(?:can|could|would|will) you\b|\bhow can\b")
 
 def _words(text: str) -> set[str]:
     return set(_WORD.findall(text.lower().replace("\u2019", "'")))
 
+def _modal_words(text: str) -> set[str]:
+    """Modal verbs that change what is asked. 'Can you explain' is a polite request and
+    'how can I' asks how, like 'how do I'; neither counts."""
+    lowered = text.lower().replace("\u2019", "'")
+    return _words(_REQUEST_PHRASES.sub(" ", lowered)) & _MODALS
 
 def rule_conflict(question: str, earlier: str) -> str | None:
     """A reason the two questions cannot need the same answer, or None if no rule fires.
@@ -94,7 +100,7 @@ def rule_conflict(question: str, earlier: str) -> str | None:
     new, old = _words(question), _words(earlier)
     if new & _NEGATIONS != old & _NEGATIONS:
         return "negation differs"
-    if new & _MODALS != old & _MODALS:
+    if _modal_words(question) != _modal_words(earlier):
         return "modal verbs differ"
     if any(bool(new & group) != bool(old & group) for group in _DIRECTIONS):
         return "direction words differ"
@@ -125,7 +131,8 @@ JUDGE_INSTRUCTIONS = (
     "You decide whether two questions can share one answer. Reply SAME only if every correct, "
     "complete answer to question A is also a correct, complete answer to question B, and the "
     "reverse. Reply DIFFERENT if they ask for different information, or about different things, "
-    "times, quantities or conditions, or want the answer in a different form. Reply UNSURE "
+    "times, quantities or conditions, or want the answer in a different form, length, "
+    "language or unit. Reply UNSURE "
     "otherwise. Reply with exactly one word: SAME, DIFFERENT or UNSURE."
 )
 

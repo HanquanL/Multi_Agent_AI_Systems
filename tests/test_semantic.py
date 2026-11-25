@@ -212,3 +212,14 @@ async def test_judge_sends_both_questions_and_counts_its_cost():
     assert "Question A: What is the largest planet?" in sent.messages[1].content
     assert judge.calls == 1
     assert judge.prompt_tokens > 0
+
+@pytest.mark.parametrize(
+    ("question", "earlier"),
+    [
+        ("Can you explain what deadlock means in a database system?", "What is a database deadlock?"),
+        ("In Python, how can I reverse a list?", "How do I reverse a list in Python?"),
+    ],
+)
+async def test_polite_requests_and_how_can_are_not_modal_conflicts(question, earlier):
+    judgement = await RuleVerifier().verify(question, earlier)
+    assert judgement.verdict is Verdict.UNSURE
