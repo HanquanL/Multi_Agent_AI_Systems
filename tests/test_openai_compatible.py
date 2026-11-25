@@ -194,3 +194,20 @@ async def test_gateway_makes_one_http_generation_for_a_repeat():
     assert (first.source, second.source) == ("upstream", "cache")
     assert second.model_version == "small@100"
     assert len(posts) == 1
+
+async def test_embed_returns_the_vector():
+    seen = []
+    async with make(replies({"data": [{"embedding": [0.5, -1, 2]}]}, seen)) as provider:
+        vector = await provider.embed("hello")
+    assert vector == (0.5, -1.0, 2.0)
+    assert str(seen[0].url) == "http://llm.test/v1/embeddings"
+    assert json.loads(seen[0].content) == {"model": "small", "input": "hello"}
+
+
+@pytest.mark.parametrize(
+    "body", [{"data": []}, {"data": [{"embedding": []}]}, {"error": "unknown model"}]
+)
+async def test_bad_embedding_responses_are_source_errors(body):
+    async with make(replies(body)) as provider:
+        with pytest.raises(SourceError):
+            await provider.embed("hello")

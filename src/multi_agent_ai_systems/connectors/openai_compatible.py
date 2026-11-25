@@ -108,6 +108,17 @@ class OpenAICompatibleProvider(InferenceProvider):
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise SourceError(f"unexpected response from {self.name}") from exc
 
+    async def embed(self, text: str) -> tuple[float, ...]:
+        """One embedding vector for text from this provider's model. One upstream call."""
+        body = await self._request("POST", "/embeddings", {"model": self.model, "input": text})
+        try:
+            vector = tuple(float(x) for x in body["data"][0]["embedding"])
+            if not vector:
+                raise ValueError("empty vector")
+            return vector
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise SourceError(f"unexpected embedding response from {self.name}") from exc
+        
     async def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
