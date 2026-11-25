@@ -386,3 +386,37 @@ more than once: run 1 reports 11.18 s of generation in a round that took 2.83 s,
 4.50 s of overhead for rounds that took 0.37 s. Time comparisons must use elapsed wall-clock time.
 Offline: 274 tests (commit 2a5e6f7).
 Raw output: [runs/2026-11-15-llm-only-nonfinance.txt](runs/2026-11-15-llm-only-nonfinance.txt)
+
+## F28. Semantic reuse makes the intended decision in four demo cases, but cold models make it slow
+*2026-11-25 · verified (live, four hand-picked cases, one run; transcribed from screenshots)*
+
+Demo step 7 asks a question and then a differently worded one, in a workload with semantic
+reuse active (similarity floor 0.8 for the demo; answers `llama3.2:3b`, embeddings
+`nomic-embed-text:latest`, judge `qwen2.5:7b`). All four cases ended as designed. "Which
+planet is the biggest?" was served the answer to "What is the largest planet?" (similarity
+0.9463, judge SAME, source `similar`). "Should this file be deleted?" after "Can this file be
+deleted?" was rejected by the rules (modal verbs differ) without calling the judge. "Explain
+TCP in detail." after "Explain TCP in one sentence." was rejected by the judge (DIFFERENT).
+"Who wrote Macbeth?" after "Who wrote Hamlet?" was left uncertain (UNSURE) and generated. In
+the three cases that did not reuse, the second question was generated normally.
+
+Cold models dominated the time. The first case took 88.94 s: 40.22 s for the first question
+(loading the answer model and the embedding model) and 48.72 s for the reused one (loading the
+judge). The demo warm-up loaded only the answer model at that point; it now also loads the
+embedding model and the judge (commit 804e2fa).
+
+Reuse did not pay off on these short answers. The reused answer avoided 106 tokens; one judge
+call costs about 120 prompt tokens (119-120 per call in the live checks of 2026-11-24), and
+judge tokens are counted separately (`judge_cost`), not in "tokens spent". Semantic reuse
+saves only when the answer costs much more to generate than a judgement.
+
+Limits: four hand-picked cases chosen to show each decision, one run, numbers transcribed from
+screenshots. They show the decision path works, not that the judge is reliable; that needs a
+labelled set. The 0.8 similarity floor was chosen so that every case reached a decision; it is
+not a recommended setting. In the first case the counters show 2 model calls for one
+generation; the tokens (139 spent = 106 for the question + 33) suggest a warm-up request ran in
+the same seconds (inferred, not checked). The answer model's replies were weak in places (it
+refused the file question and called Hamlet's authorship debated); this does not affect the
+reuse decisions.
+Offline: 320 tests (commit 1315542).
+Raw output: [runs/2026-11-25-semantic-demo-step7.txt](runs/2026-11-25-semantic-demo-step7.txt)

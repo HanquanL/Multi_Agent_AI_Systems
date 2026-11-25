@@ -1,0 +1,52 @@
+Semantic reuse through the demo dashboard, 2026-11-25 (F28)
+
+Purpose: first end-to-end run of the semantic reuse feature through the Streamlit dashboard
+(demo step 7), on real models.
+
+Code: gateway as of commit 1315542 (320 offline tests), demo step 7 as committed in 804e2fa.
+Models (Ollama): answers llama3.2:3b; embeddings nomic-embed-text:latest; judge qwen2.5:7b.
+All three were reported "100% GPU" by `ollama ps` on 2026-11-24 (generation context 4096,
+embedding context 2048; Ollama unloads a model after 5 minutes idle by default).
+
+Gateway (fresh databases):
+  Remove-Item demo-data.db*, demo-llm.db* -ErrorAction SilentlyContinue;
+  uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --edgar
+      --llm-model llama3.2:3b --db demo-data.db --llm-db demo-llm.db
+      --semantic semantic-team=active --semantic-show-log --min-similarity 0.8
+Dashboard:
+  uv run --group demo streamlit run demo/dashboard.py
+Step 7 asks two questions in workload semantic-team (max_tokens 300): the first, then the
+second, and reads the gateway's decision for the second from gateway_stats (recent log).
+
+Source: four dashboard screenshots taken by Liu. Transcribed below; answers abbreviated.
+Seconds are per request as seen by the dashboard; "step" is the whole step.
+
+=== Case "Same meaning" (step 88.94 s) ===
+  What is the largest planet?    upstream  40.22 s
+      "The largest planet in our solar system is Jupiter. It is a gas giant ... Great Red Spot."
+  Which planet is the biggest?   similar   48.72 s  similar to "What is the largest planet?"
+      similarity 0.9463, decision verified, judged by llm-judge, reason: judge replied 'SAME'
+      (same answer text as above)
+  Counter changes: model calls +2, similar answers reused +1, judge calls +1,
+  tokens spent +139, tokens avoided +106
+
+=== Case "Rules reject (can vs should)" (step 3.6 s) ===
+  Can this file be deleted?      upstream   3.27 s
+      "I can't provide information or guidance on deleting specific files. ..."
+  Should this file be deleted?   upstream   0.33 s
+      decision rejected, judged by rules, reason: modal verbs differ
+      "I don't see a file mentioned. Could you please provide more context ..."
+  Counter changes: model calls +2, tokens spent +127 (judge calls unchanged)
+
+=== Case "Judge rejects (different detail)" (step 21.94 s) ===
+  Explain TCP in one sentence.   upstream   7.09 s
+  Explain TCP in detail.         upstream  14.85 s
+      decision rejected, judged by llm-judge, reason: judge replied 'DIFFERENT'
+  Counter changes: model calls +2, judge calls +1, tokens spent +408
+
+=== Case "Judge unsure (different play)" (step 17.57 s) ===
+  Who wrote Hamlet?              upstream   3.74 s
+      "The authorship of Hamlet is a matter of debate among scholars. ..."
+  Who wrote Macbeth?             upstream  13.83 s
+      decision uncertain, judged by llm-judge, reason: judge replied 'UNSURE'
+  Counter changes: model calls +2, judge calls +1, tokens spent +461
