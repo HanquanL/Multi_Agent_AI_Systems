@@ -8,14 +8,14 @@ final call. Anything uncertain falls back to a normal model call.
 
 import math
 import re
+from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from multi_agent_ai_systems.connectors.base import SourceError
 from multi_agent_ai_systems.llm import GenerationRequest, InferenceProvider, Message, request_key
-
 
 
 def comparison_scope(
@@ -207,7 +207,7 @@ class MemoryIndex:
 
     def __init__(self, max_entries: int = 10_000):
         self.max_entries = max_entries
-        self._entries: dict[str, tuple[IndexEntry, float]] = {}  # key -> (entry, norm), oldest first
+        self._entries: dict[str, tuple[IndexEntry, float]] = {}# key -> (entry, norm), oldest first
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -281,3 +281,25 @@ async def decide(
         all_different = all_different and judgement.verdict is Verdict.DIFFERENT
     decision = Decision.REJECTED if all_different else Decision.UNCERTAIN
     return ReuseDecision(decision, *best)
+
+class ReuseMode(Enum):
+    EXACT = "exact"  # only identical requests share answers (the default)
+    SHADOW = "shadow"  # look for similar questions and log the decision, but never serve
+    ACTIVE = "active"  # serve a similar question's answer when a verifier says SAME
+
+
+@dataclass
+class SemanticReuse:
+    """How the gateway may reuse answers to differently worded questions. Workloads not listed
+    in modes stay EXACT, and pay nothing for this feature."""
+
+    embedder: Embedder
+    verifier: Verifier
+    modes: dict[str, ReuseMode]
+    index: MemoryIndex = field(default_factory=MemoryIndex)
+    min_similarity: float = 0.9
+    max_question_chars: int = 2000  # longer questions skip semantic reuse
+    log: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=1000))
+
+    def mode(self, workload: str) -> ReuseMode:
+        return self.modes.get(workload, ReuseMode.EXACT)

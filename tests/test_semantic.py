@@ -10,13 +10,13 @@ from multi_agent_ai_systems.semantic import (
     Decision,
     IndexEntry,
     Judgement,
+    LLMJudge,
     MemoryIndex,
     RuleVerifier,
     Verdict,
     VerifierChain,
     comparison_scope,
     decide,
-    LLMJudge,
 )
 
 
@@ -66,7 +66,8 @@ def test_requests_that_cannot_share_answers_have_no_scope():
 # --- what must be rejected, and what stays uncertain ---
 
 MUST_REJECT = [
-    ("What is the largest planet in our solar system?", "What is the smallest planet in our solar system?"),
+    ("What is the largest planet in our solar system?", 
+     "What is the smallest planet in our solar system?"),
     ("What was the population of France in 2023?", "What was the population of France in 2024?"),
     ("Is Pluto a planet?", "Is Pluto not a planet?"),
     ("Can this file be deleted?", "Should this file be deleted?"),

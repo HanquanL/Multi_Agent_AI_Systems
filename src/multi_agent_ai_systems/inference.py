@@ -38,6 +38,15 @@ from multi_agent_ai_systems.llm import (
 )
 from multi_agent_ai_systems.merging import RequestMerger
 from multi_agent_ai_systems.ratelimit import RateLimiter
+from multi_agent_ai_systems.semantic import (
+    Decision,
+    IndexEntry,
+    ReuseDecision,
+    ReuseMode,
+    SemanticReuse,
+    comparison_scope,
+    decide,
+)
 from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import Validity, ValidityPolicy
 
@@ -53,6 +62,8 @@ class Generation:
     source: str  # "cache" (memory), "store" (disk), "merged" or "upstream"
     age_seconds: float  # how long the response has been stored; 0 if just generated
     answer_kind: str = "generated"  # unverified, unlike an answer computed from source data
+    similar_to: str | None = None  # the earlier question whose answer was reused
+    similarity: float | None = None
 
 
 class ContextError(Exception):
@@ -87,6 +98,7 @@ class ContextSource(Protocol):
 @dataclass
 class InferenceCounts:
     cache_hits: int = 0
+    semantic_hits: int = 0  # answers reused from a differently worded, verified question
     store_hits: int = 0
     merged: int = 0  # joined a generation already in flight
     misses: int = 0  # looked in the cache and had to go on
@@ -105,6 +117,7 @@ class InferenceCounts:
 class InferenceStats:
     by_workload: dict[str, InferenceCounts] = field(default_factory=dict)  # per quota bucket
     changed_probes: Counter[str] = field(default_factory=Counter)  # by probe name
+    semantic: Counter[str] = field(default_factory=Counter)  # semantic reuse decisions
 
     def workload(self, bucket: str) -> InferenceCounts:
         return self.by_workload.setdefault(bucket, InferenceCounts())
@@ -116,6 +129,14 @@ class _Ticket:
 
     started: bool = False
 
+@dataclass
+class _Semantic:
+    """What a semantic lookup found: an entry to index the new answer under, the decision
+    log, and an answer to serve when one was verified in active mode."""
+
+    entry: IndexEntry | None = None
+    log: dict[str, Any] | None = None
+    served: tuple[Record, float, ReuseDecision] | None = None
 
 class InferenceGateway:
     def __init__(
@@ -132,6 +153,7 @@ class InferenceGateway:
         clock: Clock | None = None,
         context_source: ContextSource | None = None,
         price: ModelPrice | None = None,
+        semantic: SemanticReuse | None = None,
     ):
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -160,6 +182,7 @@ class InferenceGateway:
         self.stats = InferenceStats()
         self.context_source = context_source
         self.price = price  # published prices; None for a local model with no provider bill
+        self.semantic = semantic  # None: exact-match reuse only
 
     async def generate(
         self,
@@ -209,11 +232,28 @@ class InferenceGateway:
             self._add_overhead(counts, start, 0.0)
             return self._generation(record.data, version, source, age)
 
+        reuse = await self._semantic_lookup(
+            key, request, specs, version, max_age, data_max_age, workload, agent
+        )
+        if reuse.served is not None:
+            record, age, decision = reuse.served
+            counts.semantic_hits += 1
+            _avoid(counts, record.data)
+            self._add_overhead(counts, start, 0.0)
+            generation = self._generation(record.data, version, "similar", age)
+            return replace(
+                generation,
+                similar_to=decision.candidate.question,
+                similarity=round(decision.candidate.similarity, 4),
+            )
+
         counts.misses += 1
         ticket = _Ticket()
         record = await self._merger.get(
-            key, ticket, request, specs, data_max_age, workload, agent, version
+            key, ticket, request, specs, data_max_age, workload, agent, version, reuse.entry
         )
+        if reuse.log is not None:
+            reuse.log["generated_answer"] = record.data["text"]
         if ticket.started:
             self._add_overhead(counts, start, record.data["generation_seconds"])
             return self._generation(record.data, version, "upstream", 0.0)
@@ -237,6 +277,7 @@ class InferenceGateway:
         workload: str,
         agent: str,
         version: str,
+        entry: IndexEntry | None,
     ) -> Record:
         """Runs once per merged generation, charged to the workload that started it."""
         ticket.started = True
@@ -261,6 +302,8 @@ class InferenceGateway:
                 self.store.put(record)
             if self.cache.put(record):
                 self._stored_at[key] = self._clock.now()
+            if entry is not None and self.semantic is not None:
+                self.semantic.index.add(entry)  # only answers that can be reused are indexed
         return record
 
     def _normalize(self, context: Sequence[str]) -> tuple[str, ...]:
@@ -287,6 +330,80 @@ class InferenceGateway:
         messages = (Message("system", grounding.text), *request.messages)
         return replace(request, messages=messages), grounding.dependencies
 
+    async def _semantic_lookup(
+        self,
+        key: str,
+        request: GenerationRequest,
+        specs: tuple[str, ...],
+        version: str,
+        max_age: float | None,
+        data_max_age: float | None,
+        workload: str,
+        agent: str,
+    ) -> _Semantic:
+        """Look for a differently worded earlier question. Serves nothing unless the workload is
+        in active mode, a verifier said SAME and the answer is still valid. Any failure means
+        a normal model call."""
+        semantic = self.semantic
+        if semantic is None or semantic.mode(workload) is ReuseMode.EXACT:
+            return _Semantic()
+        mode = semantic.mode(workload)
+        scope = comparison_scope(
+            request,
+            scope=workload,
+            provider=self.provider.name,
+            model=self.provider.model,
+            model_version=version,
+            context=specs,
+        )
+        question = request.messages[-1].content
+        if scope is None or len(question) > semantic.max_question_chars:
+            return _Semantic()
+        try:
+            embedder = await semantic.embedder.model_version()
+            vector = await semantic.embedder.embed(question)
+        except SourceError:
+            self.stats.semantic["embedding_failed"] += 1
+            return _Semantic()
+        entry = IndexEntry(key, scope, question, vector, embedder)
+
+        live = {}  # candidates whose answers can still be served to this caller
+        for candidate in semantic.index.search(
+            scope, vector, embedder, min_similarity=semantic.min_similarity
+        ):
+            found = self._find(candidate.key, max_age)
+            if found is not None:
+                live[candidate.key] = (candidate, found)
+        decision = await decide(question, [c for c, _ in live.values()], semantic.verifier)
+        self.stats.semantic[decision.decision.value] += 1
+
+        log: dict[str, Any] = {
+            "workload": workload,
+            "mode": mode.value,
+            "question": question,
+            "decision": decision.decision.value,
+        }
+        if decision.candidate is not None:
+            log["candidate"] = decision.candidate.question
+            log["similarity"] = round(decision.candidate.similarity, 4)
+        if decision.judgement is not None:
+            log["verdict"] = decision.judgement.verdict.value
+            log["by"] = decision.judgement.by
+            log["reason"] = decision.judgement.reason
+
+        served = None
+        if decision.decision is Decision.VERIFIED:
+            record, age, _ = live[decision.candidate.key][1]
+            log["reused_answer"] = record.data["text"]
+            counts = self._counts(workload)
+            if mode is ReuseMode.ACTIVE and await self._still_valid(
+                decision.candidate.key, record, counts, data_max_age, workload, agent
+            ):
+                served = (record, age, decision)
+        log["served"] = served is not None
+        semantic.log.append(log)
+        return _Semantic(entry, log, served)
+    
     async def _still_valid(
         self,
         key: str,
@@ -316,6 +433,8 @@ class InferenceGateway:
             self.cache.remove(key)
             if self.store is not None:
                 self.store.remove(key)
+            if self.semantic is not None:
+                self.semantic.index.remove(key)
         return False
     
     def _find(self, key: str, max_age: float | None) -> tuple[Record, float, str] | None:
