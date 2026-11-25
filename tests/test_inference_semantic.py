@@ -13,9 +13,12 @@ from multi_agent_ai_systems.semantic import (
     SemanticReuse,
     Verdict,
     VerifierChain,
+    IndexEntry,
+    comparison_scope
 )
 from multi_agent_ai_systems.server import inference_payload
 from multi_agent_ai_systems.validity import TTLPolicy
+
 
 LARGEST = "What is the largest planet?"
 BIGGEST = "Which planet is the biggest?"
@@ -50,7 +53,8 @@ class FixedJudge:
         return Judgement(self.verdict, "fixed", self.name)
 
 
-def make(mode=ReuseMode.ACTIVE, verdict=Verdict.SAME, modes=None):
+def make(mode=ReuseMode.ACTIVE, verdict=Verdict.SAME, modes=None,
+        cache_bytes=1_000_000):
     provider = FakeProvider()
     embedder = FakeEmbedder()
     judge = FixedJudge(verdict)
@@ -59,7 +63,7 @@ def make(mode=ReuseMode.ACTIVE, verdict=Verdict.SAME, modes=None):
     )
     gateway = InferenceGateway(
         provider,
-        cache=RecordCache(1_000_000),
+        cache=RecordCache(cache_bytes),
         policy=TTLPolicy(3600),
         clock=FakeClock(),
         semantic=semantic,
@@ -106,6 +110,7 @@ async def test_an_uncertain_verdict_generates():
 
 async def test_shadow_mode_never_serves_but_logs_both_answers():
     gateway, provider, _, _, semantic = make(mode=ReuseMode.SHADOW)
+    semantic.show_log = True
     await gateway.generate(ask(LARGEST), workload="team-a")
     result = await gateway.generate(ask(BIGGEST), workload="team-a")
 
@@ -165,11 +170,14 @@ async def test_stats_report_decisions_and_what_judging_cost():
     assert payload["judge_cost"]["calls"] == 1
     assert payload["recent"][-1]["served"] is True
 
-
-async def test_recent_questions_are_hidden_by_default():
+async def test_the_decision_log_keeps_no_text_unless_asked():
     gateway, _, _, _, _ = make()
     await gateway.generate(ask(LARGEST), workload="team-a")
-    assert inference_payload(gateway)["semantic"]["recent"] is None
+    await gateway.generate(ask(BIGGEST), workload="team-a")
+
+    entry = inference_payload(gateway)["semantic"]["recent"][-1]
+    assert entry["decision"] == "verified"
+    assert not {"question", "candidate", "reused_answer", "generated_answer"} & entry.keys()
 
 async def test_a_reused_wording_is_an_exact_hit_next_time():
     gateway, provider, _, judge, _ = make()
@@ -190,3 +198,35 @@ async def test_small_requests_skip_the_lookup():
 
     assert embedder.calls == 0
     assert provider.calls == 2
+
+async def test_shadow_does_not_count_an_invalid_answer_as_reusable():
+    gateway, _, _, _, _ = make(mode=ReuseMode.SHADOW)
+    await gateway.generate(ask(LARGEST), workload="team-a")
+
+    async def dependencies_changed(*args):
+        return False
+
+    gateway._still_valid = dependencies_changed
+    await gateway.generate(ask(BIGGEST), workload="team-a")
+    assert gateway.stats.semantic["verified_invalid"] == 1
+    assert gateway.stats.semantic["verified"] == 0
+
+
+async def test_answers_that_could_not_be_stored_are_not_indexed():
+    gateway, _, _, _, semantic = make(cache_bytes=10)  # too small for any answer
+    await gateway.generate(ask(LARGEST), workload="team-a")
+    assert len(semantic.index) == 0
+
+
+async def test_dead_index_entries_do_not_crowd_out_live_ones():
+    gateway, _, _, _, semantic = make()
+    await gateway.generate(ask(LARGEST), workload="team-a")
+    scope = comparison_scope(
+        ask(BIGGEST), scope="team-a", provider="fake-llm", model="fake-1", model_version="v1"
+    )
+    for n in range(3):  # closer than the live answer, but their answers are gone
+        semantic.index.add(IndexEntry(f"llm/gone-{n}", scope, "gone", VECTORS[BIGGEST], "emb-1"))
+
+    result = await gateway.generate(ask(BIGGEST), workload="team-a")
+    assert (result.source, result.similar_to) == ("similar", LARGEST)
+    assert len(semantic.index) == 1  # the dead entries were removed

@@ -301,5 +301,5 @@ def semantic_payload(inference: InferenceGateway) -> dict[str, Any] | None:
         "index_entries": len(semantic.index),
         "decisions": dict(inference.stats.semantic),
         "judge_cost": dict(judge_cost),
-        "recent": list(semantic.log)[-20:] if semantic.show_log else None,
+        "recent": list(semantic.log)[-20:],  # text only with --semantic-show-log
     }

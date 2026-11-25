@@ -166,9 +166,9 @@ class LLMJudge:
             return Judgement(Verdict.UNSURE, f"judge unavailable: {exc}", self.name)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
-        words = completion.text.split()
-        word = words[0].strip(".,!:;\"'").upper() if words else ""
-        verdict = {"SAME": Verdict.SAME, "DIFFERENT": Verdict.DIFFERENT}.get(word, Verdict.UNSURE)
+        # The whole reply must be one of the three words; "SAME, but ..." is not a SAME.
+        reply = completion.text.strip().strip(".!\"'").strip().upper()
+        verdict = {"SAME": Verdict.SAME, "DIFFERENT": Verdict.DIFFERENT}.get(reply, Verdict.UNSURE)
         return Judgement(verdict, f"judge replied {completion.text.strip()[:40]!r}", self.name)
 
 
@@ -234,7 +234,7 @@ class MemoryIndex:
         vector: Sequence[float],
         embedder: str,
         *,
-        limit: int = 3,
+        limit: int | None = 3,
         min_similarity: float = 0.9,
     ) -> list[Candidate]:
         norm = _norm(vector)
@@ -254,7 +254,7 @@ class MemoryIndex:
             if similarity >= min_similarity:
                 found.append(Candidate(entry.key, entry.question, similarity))
         found.sort(key=lambda candidate: candidate.similarity, reverse=True)
-        return found[:limit]
+        return found if limit is None else found[:limit]
 
 
 class Decision(Enum):
@@ -305,9 +305,10 @@ class SemanticReuse:
     modes: dict[str, ReuseMode]
     index: MemoryIndex = field(default_factory=MemoryIndex)
     min_similarity: float = 0.9
+    max_candidates: int = 3  # still-servable candidates passed to the verifier, best first
     max_question_chars: int = 2000  # longer questions skip semantic reuse
     min_tokens: int = 0  # skip semantic lookup for requests too small for reuse to pay off
-    show_log: bool = False  # expose recent questions in stats; any client can read stats
+    show_log: bool = False  # keep question and answer text in the decision log and show it
     log: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=1000))
 
     def mode(self, workload: str) -> ReuseMode:

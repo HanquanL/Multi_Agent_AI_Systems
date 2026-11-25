@@ -253,7 +253,7 @@ class InferenceGateway:
         record = await self._merger.get(
             key, ticket, request, specs, data_max_age, workload, agent, version, reuse.entry
         )
-        if reuse.log is not None:
+        if reuse.log is not None and self.semantic.show_log:
             reuse.log["generated_answer"] = record.data["text"]
         if ticket.started:
             self._add_overhead(counts, start, record.data["generation_seconds"])
@@ -299,12 +299,12 @@ class InferenceGateway:
         )
         # A response cut off by max_tokens is returned but never reused.
         if completion.finish_reason == "stop":
-            if self.store is not None:
-                self.store.put(record)
+            stored = self.store.put(record) if self.store is not None else False
             if self.cache.put(record):
                 self._stored_at[key] = self._clock.now()
-            if entry is not None and self.semantic is not None:
-                self.semantic.index.add(entry)  # only answers that can be reused are indexed
+                stored = True
+            if stored and entry is not None and self.semantic is not None:
+                self.semantic.index.add(entry)  # only answers that can be served are indexed
         return record
 
     def _normalize(self, context: Sequence[str]) -> tuple[str, ...]:
@@ -372,40 +372,55 @@ class InferenceGateway:
             return _Semantic()
         entry = IndexEntry(key, scope, question, vector, embedder)
 
-        live = {}  # candidates whose answers can still be served to this caller
+        live = {}  # up to max_candidates whose answers this caller can still be served
         for candidate in semantic.index.search(
-            scope, vector, embedder, min_similarity=semantic.min_similarity
+            scope, vector, embedder, min_similarity=semantic.min_similarity, limit=None
         ):
+            if len(live) == semantic.max_candidates:
+                break
             found = self._find(candidate.key, max_age)
             if found is not None:
                 live[candidate.key] = (candidate, found)
+            elif self._gone(candidate.key):
+                semantic.index.remove(candidate.key)  # its answer was evicted or invalidated
         decision = await decide(question, [c for c, _ in live.values()], semantic.verifier)
-        self.stats.semantic[decision.decision.value] += 1
+
+        outcome = decision.decision.value
+        served = None
+        reused = None
+        if decision.decision is Decision.VERIFIED:
+            # Shadow mode applies the same admission checks as active mode, so a stale answer
+            # is never counted as a reuse opportunity.
+            record, age, _ = live[decision.candidate.key][1]
+            counts = self._counts(workload)
+            if await self._still_valid(
+                decision.candidate.key, record, counts, data_max_age, workload, agent
+            ):
+                reused = record.data["text"]
+                if mode is ReuseMode.ACTIVE:
+                    served = (record, age, decision)
+            else:
+                outcome = "verified_invalid"
+        self.stats.semantic[outcome] += 1
 
         log: dict[str, Any] = {
             "workload": workload,
             "mode": mode.value,
-            "question": question,
-            "decision": decision.decision.value,
+            "decision": outcome,
+            "served": served is not None,
         }
         if decision.candidate is not None:
-            log["candidate"] = decision.candidate.question
             log["similarity"] = round(decision.candidate.similarity, 4)
         if decision.judgement is not None:
             log["verdict"] = decision.judgement.verdict.value
             log["by"] = decision.judgement.by
             log["reason"] = decision.judgement.reason
-
-        served = None
-        if decision.decision is Decision.VERIFIED:
-            record, age, _ = live[decision.candidate.key][1]
-            log["reused_answer"] = record.data["text"]
-            counts = self._counts(workload)
-            if mode is ReuseMode.ACTIVE and await self._still_valid(
-                decision.candidate.key, record, counts, data_max_age, workload, agent
-            ):
-                served = (record, age, decision)
-        log["served"] = served is not None
+        if semantic.show_log:  # question and answer text only when the operator asked for it
+            log["question"] = question
+            if decision.candidate is not None:
+                log["candidate"] = decision.candidate.question
+            if reused is not None:
+                log["reused_answer"] = reused
         semantic.log.append(log)
         return _Semantic(entry, log, served)
 
@@ -415,6 +430,12 @@ class InferenceGateway:
         the copy never outlives the answer it copies; it keeps its dependencies."""
         if self.cache.put(replace(record, key=key)):
             self._stored_at[key] = self._clock.now() - age
+
+    def _gone(self, key: str) -> bool:
+        """The answer is no longer stored anywhere, as opposed to too old for this caller."""
+        return self.cache.get(key) is None and (
+            self.store is None or self.store.get(key) is None
+        )
 
     async def _still_valid(
         self,

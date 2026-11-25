@@ -188,6 +188,7 @@ async def test_uncertain_falls_back_with_the_best_candidate():
         ("DIFFERENT", Verdict.DIFFERENT),
         ("Probably the same", Verdict.UNSURE),
         ("", Verdict.UNSURE),
+        ("SAME, but the second asks for more", Verdict.UNSURE),
     ],
 )
 async def test_judge_accepts_only_a_clear_one_word_reply(reply, verdict):

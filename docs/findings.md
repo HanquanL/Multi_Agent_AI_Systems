@@ -420,3 +420,42 @@ refused the file question and called Hamlet's authorship debated); this does not
 reuse decisions.
 Offline: 320 tests (commit 1315542).
 Raw output: [runs/2026-11-25-semantic-demo-step7.txt](runs/2026-11-25-semantic-demo-step7.txt)
+
+## F29. On the development set, the 7B judge makes one false reuse; the 3B judge is unusable, and similarity is no safety signal
+*2026-11-25 · verified (development set of 58 pairs, tuned on; three runs)*
+
+`bench/judge_eval.py` ran the development set (`bench/pairs.jsonl` v0.2: 22 pairs whose
+earlier answer may be reused, 36 where it may not) through embedding similarity, the
+reject-only rules and an LLM judge, calling the models directly.
+
+The judge decides safety. On its own, `qwen2.5:7b` called 1 of the 36 non-reusable pairs SAME;
+`llama3.2:3b` called 25 of them SAME, including Hamlet/Macbeth, capital/population of France
+and TCP/UDP delivery. With the rules in front, the 3B chain still accepted 15. The 7B chain's
+one false reuse was d23, "Answer in French: what is the capital of Japan?" against the same
+question in English: the judge did not treat the answer language as a requirement. Adding
+"length, language or unit" to the judge prompt did not change that verdict.
+
+Embedding similarity does not separate safe from unsafe pairs. The highest similarities in the
+set belong to pairs with opposite meaning: "Is Paris more populous than London?" against the
+reverse (0.995), "Did Germany invade Poland?" against the reverse (0.991), and "Is a tomato a
+fruit?" against "... not a fruit?" (0.983), above most true paraphrases (0.755-0.989). With the
+7B judge, raising the similarity floor from 0.80 to 0.90 left false reuse at 1/36 and lowered
+coverage from 21/22 to 18/22; only at 0.95 did the false reuse disappear, at coverage 10/22. The
+floor mainly decides how many pairs pay for a judge call (27 of 36 non-reusable pairs reach the
+verifiers at 0.80, 16 at 0.90).
+
+The rules first blocked 2 reusable pairs for "modal verbs differ": "Can you explain ..." and
+"how can I ..." used "can" as a polite request or as "how do I". After the rule ignored those
+phrases (commit e6ce328), the 7B chain judged all 22 reusable pairs SAME; at floor 0.80 coverage
+rose from 19/22 to 21/22 with false reuse unchanged at 1/36 (precision 0.95). Judging cost
+124-130 prompt tokens per call and took a median of 0.06 s with the model loaded.
+
+Limits: 58 hand-written short questions with no conversation history; the set was written by
+the same assistant that tuned the rules and prompt, and both changes were made after seeing
+these results, so the numbers are a development result, not a measured error rate. "No false
+reuse" at floor 0.95 means none among 36 pairs. Run A's per-pair file was overwritten by run C;
+both outputs are in the run log, and run B was made with the rules before the change. The
+reported numbers will come from a separate test set written by others, run once with the
+configuration fixed beforehand (judge `qwen2.5:7b`, current rules and prompt, floor 0.80).
+Offline: 322 tests (commit e6ce328).
+Raw output: [runs/2026-11-25-judge-eval-dev.txt](runs/2026-11-25-judge-eval-dev.txt)

@@ -85,10 +85,12 @@ def summarize(results, judge):
         wrong = sum(r["similarity"] >= floor and r["chain"] == "same" for r in not_reusable)
         reached = sum(r["similarity"] >= floor for r in not_reusable)
         precision = f"{right / (right + wrong):.2f}" if right + wrong else "n/a"
+        path_calls = sum(r["similarity"] >= floor and r["rules"] != "different" for r in results)
         print(
             f"  floor {floor:.2f}: coverage {right}/{len(reusable)}, "
             f"false reuse {wrong}/{len(not_reusable)}, precision {precision}, "
-            f"non-reusable pairs reaching the verifiers {reached}/{len(not_reusable)}"
+            f"non-reusable pairs reaching the verifiers {reached}/{len(not_reusable)}, "
+            f"judge calls on the gateway path {path_calls}/{len(results)}"
         )
 
     seconds = sorted(r["judge_seconds"] for r in results)
