@@ -4,6 +4,8 @@ application would, and reports what changed in gateway_stats during that action.
 Start the gateway first (terminal 1):
   uv run --env-file .env python -m multi_agent_ai_systems --http 8000 --edgar \
       --llm-model llama3.2:3b --db demo-data.db --llm-db demo-llm.db
+      --semantic semantic-team=active --semantic warm-up=shadow 
+      --semantic semantic-team=active --semantic-show-log --min-similarity 0.8
 Then run the steps in a terminal (the fallback if the dashboard fails):
   uv run python demo/actions.py
 """
@@ -38,6 +40,17 @@ METRICS = {
     "CashAndEquivalents": "cash and cash equivalents",
 }
 PERIODS = ["FY2024", "FY2025", "2024Q2", "latest_annual"]
+SEMANTIC_TEAM = "semantic-team"
+SIMILAR_CASES = {
+    "Same meaning": ("What is the largest planet?", "Which planet is the biggest?"),
+    "Rules reject (can vs should)": ("Can this file be deleted?", "Should this file be deleted?"),
+    "Judge rejects (different detail)": (
+        "Explain TCP in one sentence.",
+        "Explain TCP in detail.",
+    ),
+    "Judge unsure (different play)": ("Who wrote Hamlet?", "Who wrote Macbeth?"),
+}
+WARM_UP_TEAM = "warm-up"
 
 
 def period_text(period: str) -> str:
@@ -76,6 +89,7 @@ class ActionResult:
 
 def snapshot(stats: dict[str, Any]) -> dict[str, int]:
     """The counters the demo talks about, summed over all workloads."""
+    semantic = (stats.get("inference") or {}).get("semantic") or {}
     llm = Counter()
     for counts in ((stats.get("inference") or {}).get("workloads") or {}).values():
         llm.update({name: value for name, value in counts.items() if isinstance(value, int)})
@@ -84,6 +98,8 @@ def snapshot(stats: dict[str, Any]) -> dict[str, int]:
         "merged into a call in flight": llm["merged"],
         "answers reused": llm["cache_hits"],
         "of which from disk": llm["store_hits"],
+        "similar answers reused": llm["semantic_hits"],
+        "judge calls": (semantic.get("judge_cost") or {}).get("calls", 0),
         "tokens spent": llm["prompt_tokens_spent"] + llm["completion_tokens_spent"],
         "tokens avoided": llm["prompt_tokens_avoided"] + llm["completion_tokens_avoided"],
         "SEC requests": stats.get("upstream_attempts", 0),
@@ -131,12 +147,16 @@ async def generate(
     if result.is_error:
         return {**row, "source": "error", "answer": result.content[0].text}
     answer = result.structured_content
-    return {
+    row = {
         **row,
         "source": answer["source"],
         "age (s)": round(answer["age_seconds"]),
         "answer": answer["text"],
     }
+    if answer.get("similar_to"):
+        row["similar to"] = answer["similar_to"]
+        row["similarity"] = answer["similarity"]
+    return row
 
 
 async def concurrent(question: str) -> ActionResult:
@@ -227,6 +247,31 @@ async def grounded(metric: str = "NetIncome", period: str = "FY2024") -> ActionR
 
     return await measured("An LLM answer grounded in a checked fact", work, question)
 
+async def last_decision(client: Client, question: str) -> Row:
+    """The gateway's semantic decision for this question; needs --semantic-show-log."""
+    semantic = ((await stats(client)).get("inference") or {}).get("semantic") or {}
+    for entry in reversed(semantic.get("recent") or []):
+        if entry["workload"] == SEMANTIC_TEAM and entry["question"] == question:
+            return {
+                "decision": entry["decision"],
+                "judged by": entry.get("by", "-"),
+                "reason": entry.get("reason", "-"),
+            }
+    return {"decision": "not looked up (an exact hit, or the log is off)"}
+
+
+async def similar(case: str) -> ActionResult:
+    earlier, question = SIMILAR_CASES[case]
+
+    async def work(client: Client) -> list[Row]:
+        rows = []
+        for text in (earlier, question):
+            row = await generate(client, text, workload=SEMANTIC_TEAM, max_tokens=300)
+            rows.append({"question": text, **row})
+        rows[-1].update(await last_decision(client, question))
+        return rows
+
+    return await measured(f"Similar question: {case}", work, f"{earlier}  ->  {question}")
 
 async def tool_names() -> set[str]:
     async with Client(URL) as client:
@@ -236,11 +281,18 @@ async def current_totals() -> dict[str, int]:
     async with Client(URL) as client:
         return snapshot(await stats(client))
 
+async def semantic_modes() -> dict[str, str]:
+    async with Client(URL) as client:
+        semantic = ((await stats(client)).get("inference") or {}).get("semantic") or {}
+    return semantic.get("modes") or {}
+
 async def warm_up() -> Row:
-    """Load the model before the audience is watching; the first call is slow. Raises if the
+    """Load every model the demo uses before the audience is watching: the answer model, and,
+    through a shadow-mode workload, the embedding model and the judge. Raises if the answer
     model did not answer, so a failed warm-up is never reported as success."""
     async with Client(URL) as client:
-        row = await generate(client, "Say OK.", workload="warm-up", max_tokens=5)
+        row = await generate(client, "Say OK.", workload=WARM_UP_TEAM, max_tokens=5)
+        await generate(client, "Please say OK.", workload=WARM_UP_TEAM, max_tokens=5)
     if row["source"] == "error":
         raise RuntimeError(row["answer"])
     return row
@@ -270,6 +322,7 @@ def main() -> None:
         shared_record,
         lambda: data_path(["NetIncome", "Revenue"], "FY2024"),
         grounded,
+        lambda: similar("Same meaning"),
     ]
     for step in steps:
         input("\nPress Enter for the next step...")
