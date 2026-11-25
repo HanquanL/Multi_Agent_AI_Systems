@@ -3,8 +3,9 @@
 import pytest
 from mcp import Client
 
-from multi_agent_ai_systems.__main__ import build, parse_args
+from multi_agent_ai_systems.__main__ import build, build_semantic, parse_args
 from multi_agent_ai_systems.config import ConfigError
+from multi_agent_ai_systems.semantic import ReuseMode
 
 
 async def tool_names(server):
@@ -33,3 +34,14 @@ def test_edgar_without_sec_settings_fails_clearly(monkeypatch):
 def test_nothing_to_serve_is_refused():
     with pytest.raises(SystemExit):
         build(parse_args([]))
+
+async def test_semantic_flag_configures_reuse_modes(monkeypatch):
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    args = parse_args(["--llm-model", "small", "--semantic", "team-a=active"])
+    assert build_semantic(args).modes == {"team-a": ReuseMode.ACTIVE}
+    assert await tool_names(build(args)) == {"generate", "gateway_stats"}
+
+
+def test_bad_semantic_mode_is_refused():
+    with pytest.raises(SystemExit):
+        parse_args(["--llm-model", "small", "--semantic", "team-a=always"])

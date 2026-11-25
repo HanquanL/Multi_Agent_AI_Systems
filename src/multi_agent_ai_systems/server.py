@@ -4,6 +4,7 @@ Run one server over streamable HTTP so all agents share one gateway (one cache, 
 limiter). Over stdio, every agent starts its own server process and nothing is shared.
 """
 
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
@@ -100,7 +101,9 @@ def _add_generate(server: MCPServer, inference: InferenceGateway) -> None:
         answer is reused only while that data is unchanged. max_age_seconds refuses stored
         answers older than that; data_max_age_seconds does the same for the data they are
         checked against. The result's source says where it came from ("cache", "store",
-        "merged" or "upstream"). answer_kind "generated" means it is unverified model output.
+        "merged", "similar" or "upstream"). "similar" means the answer to a differently worded
+        question, judged equivalent and still valid; similar_to names that question.
+        answer_kind "generated" means it is unverified model output.
         workload is the app or team you belong to (set by your operator).
         """
         # workload and agent_id are taken on trust until access keys exist.
@@ -281,4 +284,22 @@ def inference_payload(inference: InferenceGateway) -> dict[str, Any]:
         "store": store_payload(inference),
         "changed_probes": dict(inference.stats.changed_probes),
         "workloads": workloads,
+        "semantic": semantic_payload(inference),
+    }
+
+def semantic_payload(inference: InferenceGateway) -> dict[str, Any] | None:
+    semantic = inference.semantic
+    if semantic is None:
+        return None
+    verifiers = getattr(semantic.verifier, "verifiers", (semantic.verifier,))
+    judge_cost: Counter[str] = Counter()
+    for verifier in verifiers:  # what verification itself spent, to weigh against reuse
+        for name in ("calls", "prompt_tokens", "completion_tokens"):
+            judge_cost[name] += getattr(verifier, name, 0)
+    return {
+        "modes": {workload: mode.value for workload, mode in sorted(semantic.modes.items())},
+        "index_entries": len(semantic.index),
+        "decisions": dict(inference.stats.semantic),
+        "judge_cost": dict(judge_cost),
+        "recent": list(semantic.log)[-20:] if semantic.show_log else None,
     }

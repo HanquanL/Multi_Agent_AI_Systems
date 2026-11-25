@@ -237,6 +237,7 @@ class InferenceGateway:
         )
         if reuse.served is not None:
             record, age, decision = reuse.served
+            self._alias(key, record, age)
             counts.semantic_hits += 1
             _avoid(counts, record.data)
             self._add_overhead(counts, start, 0.0)
@@ -357,7 +358,11 @@ class InferenceGateway:
             context=specs,
         )
         question = request.messages[-1].content
-        if scope is None or len(question) > semantic.max_question_chars:
+        if (
+            scope is None
+            or len(question) > semantic.max_question_chars
+            or estimate_tokens(request) < semantic.min_tokens
+        ):
             return _Semantic()
         try:
             embedder = await semantic.embedder.model_version()
@@ -403,7 +408,14 @@ class InferenceGateway:
         log["served"] = served is not None
         semantic.log.append(log)
         return _Semantic(entry, log, served)
-    
+
+    def _alias(self, key: str, record: Record, age: float) -> None:
+        """Keep a verified answer under the new question's key too, so the same wording is an
+        exact hit next time and is not judged again. Memory only, with the original's age, so
+        the copy never outlives the answer it copies; it keeps its dependencies."""
+        if self.cache.put(replace(record, key=key)):
+            self._stored_at[key] = self._clock.now() - age
+
     async def _still_valid(
         self,
         key: str,

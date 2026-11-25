@@ -14,6 +14,7 @@ from multi_agent_ai_systems.semantic import (
     Verdict,
     VerifierChain,
 )
+from multi_agent_ai_systems.server import inference_payload
 from multi_agent_ai_systems.validity import TTLPolicy
 
 LARGEST = "What is the largest planet?"
@@ -151,3 +152,41 @@ async def test_requests_that_may_not_share_answers_skip_semantic_lookup():
     gateway, _, embedder, _, _ = make()
     await gateway.generate(ask(LARGEST, temperature=0.7), workload="team-a")
     assert embedder.calls == 0
+
+async def test_stats_report_decisions_and_what_judging_cost():
+    gateway, _, _, _, semantic = make()
+    semantic.show_log = True
+    await gateway.generate(ask(LARGEST), workload="team-a")
+    await gateway.generate(ask(BIGGEST), workload="team-a")
+
+    payload = inference_payload(gateway)["semantic"]
+    assert payload["modes"] == {"team-a": "active"}
+    assert payload["decisions"] == {"no_candidate": 1, "verified": 1}
+    assert payload["judge_cost"]["calls"] == 1
+    assert payload["recent"][-1]["served"] is True
+
+
+async def test_recent_questions_are_hidden_by_default():
+    gateway, _, _, _, _ = make()
+    await gateway.generate(ask(LARGEST), workload="team-a")
+    assert inference_payload(gateway)["semantic"]["recent"] is None
+
+async def test_a_reused_wording_is_an_exact_hit_next_time():
+    gateway, provider, _, judge, _ = make()
+    await gateway.generate(ask(LARGEST), workload="team-a")
+    await gateway.generate(ask(BIGGEST), workload="team-a")
+    again = await gateway.generate(ask(BIGGEST), workload="team-a")
+
+    assert again.source == "cache"
+    assert judge.calls == 1  # judged once, not on every repeat
+    assert provider.calls == 1
+
+
+async def test_small_requests_skip_the_lookup():
+    gateway, provider, embedder, _, semantic = make()
+    semantic.min_tokens = 10_000
+    await gateway.generate(ask(LARGEST), workload="team-a")
+    await gateway.generate(ask(BIGGEST), workload="team-a")
+
+    assert embedder.calls == 0
+    assert provider.calls == 2

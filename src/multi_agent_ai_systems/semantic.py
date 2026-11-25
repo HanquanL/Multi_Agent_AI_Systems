@@ -299,6 +299,8 @@ class SemanticReuse:
     index: MemoryIndex = field(default_factory=MemoryIndex)
     min_similarity: float = 0.9
     max_question_chars: int = 2000  # longer questions skip semantic reuse
+    min_tokens: int = 0  # skip semantic lookup for requests too small for reuse to pay off
+    show_log: bool = False  # expose recent questions in stats; any client can read stats
     log: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=1000))
 
     def mode(self, workload: str) -> ReuseMode:

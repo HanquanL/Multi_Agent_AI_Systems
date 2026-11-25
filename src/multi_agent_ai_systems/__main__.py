@@ -25,6 +25,13 @@ from multi_agent_ai_systems.connectors.openai_compatible import OpenAICompatible
 from multi_agent_ai_systems.gateway import Gateway
 from multi_agent_ai_systems.inference import InferenceGateway
 from multi_agent_ai_systems.llm import ModelPrice, ProviderLimits
+from multi_agent_ai_systems.semantic import (
+    LLMJudge,
+    ReuseMode,
+    RuleVerifier,
+    SemanticReuse,
+    VerifierChain,
+)
 from multi_agent_ai_systems.server import build_server
 from multi_agent_ai_systems.store import SQLiteRecordStore
 from multi_agent_ai_systems.validity import TTLPolicy
@@ -48,6 +55,36 @@ def workload_quota(text: str) -> tuple[str, int]:
         raise argparse.ArgumentTypeError(f"expected NAME=QUOTA with QUOTA >= 1, got {text!r}")
     return name, int(quota)
 
+def workload_mode(text: str) -> tuple[str, ReuseMode]:
+    """Parse NAME=MODE from the command line."""
+    name, sep, mode = text.partition("=")
+    choices = [m.value for m in ReuseMode]
+    if not sep or not name or mode not in choices:
+        raise argparse.ArgumentTypeError(
+            f"expected NAME=MODE with MODE one of {', '.join(choices)}, got {text!r}"
+        )
+    return name, ReuseMode(mode)
+
+
+def build_semantic(args: argparse.Namespace) -> SemanticReuse | None:
+    if not args.semantic:
+        return None
+    limits = ProviderLimits(RateLimit(args.llm_rpm, 60.0))
+
+    def provider(model: str) -> OpenAICompatibleProvider:
+        return OpenAICompatibleProvider(
+            args.llm_url, model, limits=limits, name=args.llm_provider, api_key=llm_api_key()
+        )
+
+    return SemanticReuse(
+        provider(args.embed_model),
+        VerifierChain(RuleVerifier(), LLMJudge(provider(args.judge_model))),
+        dict(args.semantic),
+        min_similarity=args.min_similarity,
+        show_log=args.semantic_show_log,
+        min_tokens=args.semantic_min_tokens,
+    )
+
 def build_inference(args: argparse.Namespace, facts: FactService | None) -> InferenceGateway | None:
     if not args.llm_model:
         return None
@@ -68,6 +105,7 @@ def build_inference(args: argparse.Namespace, facts: FactService | None) -> Infe
         store=SQLiteRecordStore(args.llm_db, args.db_mb * 1_000_000) if args.llm_db else None,
         context_source=FactContext(facts) if facts is not None else None,
         price=ModelPrice(*args.llm_price) if args.llm_price else None,
+        semantic=build_semantic(args),
     )
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -117,12 +155,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar=("INPUT", "OUTPUT"),
         help="published USD per million tokens, for estimates",
     )
+    parser.add_argument(
+        "--semantic",
+        type=workload_mode,
+        action="append",
+        default=[],
+        metavar="NAME=MODE",
+        help="reuse answers to differently worded questions for a workload: exact (default), "
+        "shadow (log only) or active (repeatable)",
+    )
+    parser.add_argument(
+        "--embed-model", default="nomic-embed-text:latest", help="embedding model for --semantic"
+    )
+    parser.add_argument(
+        "--judge-model", default="qwen2.5:7b", help="model that judges question equivalence"
+    )
+    parser.add_argument(
+        "--min-similarity", type=float, default=0.9, help="similarity needed to be a candidate"
+    )
+    parser.add_argument(
+        "--semantic-min-tokens",
+        type=int,
+        default=0,
+        help="only look for similar questions when input plus " \
+        "max output is at least this many tokens",
+    )
+    parser.add_argument(
+        "--semantic-show-log",
+        action="store_true",
+        help="show recent questions and decisions in gateway_stats (any client can read them)",
+    )
     return parser.parse_args(argv)
 
 
 def build(args: argparse.Namespace) -> MCPServer:
     if not args.edgar and not args.llm_model:
         raise SystemExit("nothing to serve: add --llm-model, --edgar, or both")
+    if args.semantic and not args.llm_model:
+        raise SystemExit("--semantic needs --llm-model")
     gateway = facts = None
     tools = []
     answers = {}
