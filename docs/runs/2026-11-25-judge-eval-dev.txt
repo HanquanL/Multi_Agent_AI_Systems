@@ -1,0 +1,160 @@
+Judge evaluation on the development set, 2026-11-25 (F29)
+
+Purpose: measure how well embedding similarity, the reject-only rules and an LLM judge separate
+question pairs whose earlier answer can be reused from pairs where it cannot.
+
+Data: bench/pairs.jsonl v0.2, the development set: 58 single short question pairs, 22 labelled
+direct_answer_reuse=true and 36 false (labels defined in bench/README.md). Written by Claude and
+reviewed with ChatGPT and Liu. Thresholds and the judge prompt were tuned on it, so these
+results are not evidence of performance elsewhere.
+
+Script: bench/judge_eval.py. Calls the models directly through Ollama's OpenAI-compatible API,
+not the gateway. For every pair it computes cosine similarity of the two questions
+(nomic-embed-text:latest), runs the rules, and always calls the judge, so the judge can be
+measured alone. "rules, then judge" is the gateway's chain: a rule's DIFFERENT wins, otherwise
+the judge's verdict. "reuse" at a floor = similarity >= floor and the chain says SAME.
+
+Runs, in order:
+  A. qwen2.5:7b judge, rules and judge prompt as of commit 1315542
+  B. llama3.2:3b judge, same rules and prompt as A
+  C. qwen2.5:7b judge after two changes made because of run A (commit e6ce328):
+     - the modal-verb rule ignores "can/could/would/will you" and "how can"
+       (A rejected s18 and s21 for "modal verbs differ")
+     - the judge prompt lists "length, language or unit" as answer requirements
+       (aimed at d23; it did not change d23's verdict)
+Command: uv run python bench/judge_eval.py --judge-model <model>
+bench/results/judge-qwen2.5_7b-2026-11-25.jsonl holds run C (run A's file was overwritten).
+bench/results/judge-llama3.2_3b-2026-11-25.jsonl holds run B, made with the old rules.
+
+=== Run A: qwen2.5:7b, before the changes ===
+s01  reuse sim 0.963  rules unsure    judge same      -> same
+s02  reuse sim 0.933  rules unsure    judge same      -> same
+s03  reuse sim 0.953  rules unsure    judge same      -> same
+s04  reuse sim 0.971  rules unsure    judge same      -> same
+s05  reuse sim 0.951  rules unsure    judge same      -> same
+s06  reuse sim 0.841  rules unsure    judge same      -> same
+s07  reuse sim 0.944  rules unsure    judge same      -> same
+s08  reuse sim 0.929  rules unsure    judge same      -> same
+s09  reuse sim 0.975  rules unsure    judge same      -> same
+s10  reuse sim 0.979  rules unsure    judge same      -> same
+s11  reuse sim 0.961  rules unsure    judge same      -> same
+s12  reuse sim 0.948  rules unsure    judge same      -> same
+s13  reuse sim 0.957  rules unsure    judge same      -> same
+s14  reuse sim 0.949  rules unsure    judge same      -> same
+s15  reuse sim 0.922  rules unsure    judge same      -> same
+s16  reuse sim 0.914  rules unsure    judge same      -> same
+s17  reuse sim 0.866  rules unsure    judge same      -> same
+s18  reuse sim 0.923  rules different judge same      -> different
+s19  reuse sim 0.842  rules unsure    judge same      -> same
+s20  reuse sim 0.755  rules unsure    judge same      -> same
+s21  reuse sim 0.989  rules different judge same      -> different
+s22  reuse sim 0.961  rules unsure    judge same      -> same
+d01  no    sim 0.836  rules unsure    judge unsure    -> unsure
+d02  no    sim 0.775  rules unsure    judge different -> different
+d03  no    sim 0.706  rules unsure    judge different -> different
+d04  no    sim 0.853  rules unsure    judge different -> different
+d05  no    sim 0.701  rules unsure    judge different -> different
+d06  no    sim 0.835  rules different judge different -> different
+d07  no    sim 0.753  rules unsure    judge different -> different
+d08  no    sim 0.860  rules unsure    judge different -> different
+d09  no    sim 0.815  rules different judge different -> different
+d10  no    sim 0.873  rules different judge different -> different
+d11  no    sim 0.899  rules different judge different -> different
+d12  no    sim 0.765  rules different judge different -> different
+d13  no    sim 0.908  rules unsure    judge different -> different
+d14  no    sim 0.903  rules different judge different -> different
+d15  no    sim 0.983  rules different judge different -> different
+d16  no    sim 0.737  rules different judge different -> different
+d17  no    sim 0.916  rules different judge different -> different
+d18  no    sim 0.676  rules different judge different -> different
+d19  no    sim 0.964  rules different judge unsure    -> different
+d20  no    sim 0.902  rules unsure    judge different -> different
+d21  no    sim 0.925  rules unsure    judge different -> different
+d22  no    sim 0.929  rules unsure    judge different -> different
+d23  no    sim 0.932  rules unsure    judge same      -> same
+d24  no    sim 0.930  rules unsure    judge different -> different
+d25  no    sim 0.902  rules unsure    judge different -> different
+d26  no    sim 0.932  rules unsure    judge different -> different
+d27  no    sim 0.917  rules unsure    judge unsure    -> unsure
+d28  no    sim 0.991  rules unsure    judge different -> different
+d29  no    sim 0.995  rules unsure    judge different -> different
+d30  no    sim 0.894  rules unsure    judge different -> different
+d31  no    sim 0.859  rules unsure    judge different -> different
+d32  no    sim 0.866  rules unsure    judge different -> different
+d33  no    sim 0.769  rules unsure    judge different -> different
+d34  no    sim 0.661  rules unsure    judge different -> different
+d35  no    sim 0.916  rules unsure    judge different -> different
+d36  no    sim 0.815  rules unsure    judge different -> different
+
+judge alone:
+  reusable     n=22  judged: same 22  different 0  unsure 0
+  not reusable n=36  judged: same 1  different 32  unsure 3
+
+rules, then judge:
+  reusable     n=22  judged: same 20  different 2  unsure 0
+  not reusable n=36  judged: same 1  different 33  unsure 2
+
+reuse = similarity >= floor, and rules-then-judge says same
+  floor 0.80: coverage 19/22, false reuse 1/36, precision 0.95, non-reusable pairs reaching the verifiers 27/36
+  floor 0.85: coverage 17/22, false reuse 1/36, precision 0.94, non-reusable pairs reaching the verifiers 23/36
+  floor 0.90: coverage 16/22, false reuse 1/36, precision 0.94, non-reusable pairs reaching the verifiers 16/36
+  floor 0.95: coverage 9/22, false reuse 0/36, precision 1.00, non-reusable pairs reaching the verifiers 4/36
+
+judge: 58 calls, 124 prompt tokens per call, median 0.06 s, slowest 0.95 s
+FALSE SAME d23 (different_intent, format, sim 0.9324): 'Answer in French: what is the capital of Japan?' / 'Answer in English: what is the capital of Japan?'
+
+=== Run B: llama3.2:3b, rules and prompt as in run A ===
+(similarities and rule verdicts are identical to run A; per-pair lines omitted except the judge
+column, which is summarised below)
+
+judge alone:
+  reusable     n=22  judged: same 22  different 0  unsure 0
+  not reusable n=36  judged: same 25  different 11  unsure 0
+
+rules, then judge:
+  reusable     n=22  judged: same 20  different 2  unsure 0
+  not reusable n=36  judged: same 15  different 21  unsure 0
+
+reuse = similarity >= floor, and rules-then-judge says same
+  floor 0.80: coverage 19/22, false reuse 10/36, precision 0.66, non-reusable pairs reaching the verifiers 27/36
+  floor 0.85: coverage 17/22, false reuse 9/36, precision 0.65, non-reusable pairs reaching the verifiers 23/36
+  floor 0.90: coverage 16/22, false reuse 4/36, precision 0.80, non-reusable pairs reaching the verifiers 16/36
+  floor 0.95: coverage 9/22, false reuse 1/36, precision 0.90, non-reusable pairs reaching the verifiers 4/36
+
+judge: 58 calls, 136 prompt tokens per call, median 0.04 s, slowest 0.63 s
+FALSE SAME d01 (different_intent_same_answer, entity, sim 0.836): 'Who wrote Hamlet?' / 'Who wrote Macbeth?'
+FALSE SAME d02 (different_intent, entity, sim 0.7753): 'What is the capital of Japan?' / 'What is the capital of China?'
+FALSE SAME d03 (different_intent, entity, sim 0.7057): 'Who painted the Mona Lisa?' / 'Who painted The Starry Night?'
+FALSE SAME d04 (different_intent, entity, sim 0.8529): 'What is the chemical symbol for gold?' / 'What is the chemical symbol for silver?'
+FALSE SAME d05 (different_intent, attribute, sim 0.7013): 'What is the capital of France?' / 'What is the population of France?'
+FALSE SAME d07 (different_intent, attribute, sim 0.7527): 'How tall is the Eiffel Tower?' / 'How old is the Eiffel Tower?'
+FALSE SAME d08 (different_intent, attribute, sim 0.86): 'What is the boiling point of water at sea level in Celsius?' / 'What is the freezing point of water at sea level in Celsius?'
+FALSE SAME d24 (different_intent, scope, sim 0.9296): 'How many people live in New York City?' / 'How many people live in New York State?'
+FALSE SAME d25 (different_intent, scope, sim 0.9025): 'What is the GDP of the United States?' / 'What is the GDP per capita of the United States?'
+FALSE SAME d26 (convertible_output, unit, sim 0.9319): 'What is the boiling point of water in Celsius?' / 'What is the boiling point of water in Fahrenheit?'
+FALSE SAME d29 (different_intent, role swap, sim 0.9955): 'Is Paris more populous than London?' / 'Is London more populous than Paris?'
+FALSE SAME d30 (different_intent, condition, sim 0.8945): 'Which countries border France?' / 'Which countries border both France and Spain?'
+FALSE SAME d31 (different_intent, condition, sim 0.8587): 'How do I bake a cake?' / 'How do I bake a gluten-free cake?'
+FALSE SAME d32 (different_intent, technical, sim 0.8657): 'What is the time complexity of binary search?' / 'What is the time complexity of linear search?'
+FALSE SAME d33 (different_intent, technical, sim 0.7695): 'Does TCP guarantee delivery?' / 'Does UDP guarantee delivery?'
+
+=== Run C: qwen2.5:7b, after the changes ===
+(per-pair lines as in run A except: s18 and s21 rules unsure -> same; d14 judge unsure;
+d27 judge different)
+
+judge alone:
+  reusable     n=22  judged: same 22  different 0  unsure 0
+  not reusable n=36  judged: same 1  different 32  unsure 3
+
+rules, then judge:
+  reusable     n=22  judged: same 22  different 0  unsure 0
+  not reusable n=36  judged: same 1  different 34  unsure 1
+
+reuse = similarity >= floor, and rules-then-judge says same
+  floor 0.80: coverage 21/22, false reuse 1/36, precision 0.95, non-reusable pairs reaching the verifiers 27/36
+  floor 0.85: coverage 19/22, false reuse 1/36, precision 0.95, non-reusable pairs reaching the verifiers 23/36
+  floor 0.90: coverage 18/22, false reuse 1/36, precision 0.95, non-reusable pairs reaching the verifiers 16/36
+  floor 0.95: coverage 10/22, false reuse 0/36, precision 1.00, non-reusable pairs reaching the verifiers 4/36
+
+judge: 58 calls, 130 prompt tokens per call, median 0.06 s, slowest 2.29 s
+FALSE SAME d23 (different_intent, format, sim 0.9324): 'Answer in French: what is the capital of Japan?' / 'Answer in English: what is the capital of Japan?'
